@@ -3,7 +3,6 @@ import { LoadingScreen } from './components/LoadingScreen';
 import { TitleOverlay } from './components/TitleOverlay';
 import { GameHud } from './components/GameHud';
 import { GameOverModal, PauseModal } from './components/ModalScreens';
-import { OfflineIndicator } from './components/PWAInstallButton';
 import { MetroDashEngine } from './game/engine';
 import { GamePhase, HudSnapshot, OutfitId, ThemeId } from './game/types';
 
@@ -197,7 +196,6 @@ export default function App() {
         />
       )}
 
-      <OfflineIndicator />
     </div>
   );
 }

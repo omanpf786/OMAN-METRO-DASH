@@ -1,7 +1,6 @@
 import React, { useEffect } from 'react';
 import { Volume2, VolumeX, Play, Trophy, Coins } from 'lucide-react';
 import { OUTFITS, OutfitId, THEMES, ThemeId } from '../game/types';
-import { PWAInstallButton } from './PWAInstallButton';
 
 interface TitleOverlayProps {
   themeId: ThemeId;
@@ -177,18 +176,15 @@ export const TitleOverlay: React.FC<TitleOverlayProps> = ({
             </div>
           </div>
 
-          {/* Home Screen Action Buttons: Install App & Primary Start CTA */}
-          <div className="flex items-center gap-2.5 shrink-0">
-            <PWAInstallButton variant="dock" />
-            <button
-              type="button"
-              onClick={onStartRun}
-              className="flex items-center justify-center gap-2.5 rounded-xl bg-gradient-to-b from-emerald-400 to-emerald-600 hover:from-emerald-300 hover:to-emerald-500 active:scale-[0.98] px-7 py-3.5 text-base font-extrabold text-slate-950 shadow-[0_6px_0_#065f46] transition-transform whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <Play className="w-5 h-5 fill-current" />
-              START RUN
-            </button>
-          </div>
+          {/* Home Screen Primary Start CTA */}
+          <button
+            type="button"
+            onClick={onStartRun}
+            className="flex items-center justify-center gap-2.5 rounded-xl bg-gradient-to-b from-emerald-400 to-emerald-600 hover:from-emerald-300 hover:to-emerald-500 active:scale-[0.98] px-7 py-3.5 text-base font-extrabold text-slate-950 shadow-[0_6px_0_#065f46] transition-transform whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <Play className="w-5 h-5 fill-current" />
+            START RUN
+          </button>
         </div>
 
         {/* Single flat control-hint line */}
