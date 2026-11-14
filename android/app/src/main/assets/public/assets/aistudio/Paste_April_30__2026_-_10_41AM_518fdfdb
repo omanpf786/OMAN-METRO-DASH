@@ -1,0 +1,677 @@
+
+# ===================================================================================
+# 💰 FINANCIAL SYSTEM (بیلنس اور ودڈرا)
+# ===================================================================================
+
+@dp.message(F.text == "💰 Balance")
+async def balance_checker(message: Message, state: FSMContext):
+    """بیلنس چیک کرنے کا فنکشن (FIXED: DYNAMIC HOLD)"""
+    await state.clear()
+    uid = message.from_user.id
+    if not await is_subscribed(uid):
+        await message.answer("⚠️ Join our channel first!", reply_markup=get_sub_kb())
+        return
+
+    if await is_banned(uid): return
+    
+    db.execute("SELECT balance FROM users WHERE uid=?", (uid,))
+    res = db.fetchone()
+    bal = res[0] if res else 0.0
+    
+    # یہاں سے تبدیلی شروع (Hold Calculation)
+    rew = float(get_conf('reward'))
+    db.execute("SELECT COUNT(*) FROM tasks WHERE uid=? AND status='pending'", (uid,))
+    pending_count = db.fetchone()[0]
+    hld = pending_count * rew
+    
+    msg = (
+        "💳 <b>YOUR WALLET STATUS</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"💰 Available Balance: <b>${bal:.2f}</b>\n"
+        f"⏳ Pending Clearance: <b>${hld:.2f}</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "<i>Tasks usually take 24h to move from Hold to Balance.</i>"
+    )
+    await message.answer(msg, parse_mode="HTML")
+
+@dp.message(F.text == "🏦 Withdraw")
+async def withdraw_init(message: Message, state: FSMContext):
+    """ودڈرا مینیو"""
+    await state.clear()
+    if not await is_subscribed(message.from_user.id):
+        await message.answer("⚠️ Join our channel first!", reply_markup=get_sub_kb())
+        return
+
+    if await is_banned(message.from_user.id): return
+    
+    min_w = float(get_conf('min_withdraw'))
+    db.execute("SELECT balance FROM users WHERE uid=?", (message.from_user.id,))
+    bal = db.fetchone()[0]
+    
+    if bal < min_w:
+        await message.answer(f"❌ <b>Insufficient Funds!</b>\nMinimum withdrawal is <b>${min_w}</b>. Your balance is <b>${bal:.2f}</b>.", parse_mode="HTML")
+        return
+
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="USDT (BEP-20)", callback_data="wd_method:USDT"))
+    kb.row(InlineKeyboardButton(text="❌ Close", callback_data="close_window"))
+    
+    await message.answer("📤 <b>Select Withdrawal Method:</b>", reply_markup=kb.as_markup(), parse_mode="HTML")
+
+@dp.callback_query(F.data.startswith("wd_method:"))
+async def withdraw_addr_ask(call: CallbackQuery, state: FSMContext):
+    """ایڈریس مانگنا"""
+    method = call.data.split(":")[1]
+    await state.update_data(wd_method=method)
+    
+    await call.message.edit_text(
+        f"🚀 <b>Method: {method} (BEP-20)</b>\n"
+        "📉 Processing Fee: 3.33%\n"
+        "🔢 Minimum: $0.20\n\n"
+        "<b>Please paste your USDT BEP-20 Wallet Address:</b>",
+        parse_mode="HTML"
+    )
+    await state.set_state(UserStates.wd_address)
+    await call.answer()
+
+@dp.message(UserStates.wd_address)
+async def withdraw_amount_ask(message: Message, state: FSMContext):
+    """رقم پوچھنا"""
+    addr = message.text.strip()
+    if len(addr) < 30: # بیسک والٹ چیک
+        await message.answer("❌ <b>Invalid Address!</b>\nPlease provide a correct BEP-20 wallet address.")
+        return
+        
+    await state.update_data(wd_addr=addr)
+    await message.answer("💰 <b>Enter Amount to Withdraw:</b>\n(e.g., 0.50)", parse_mode="HTML")
+    await state.set_state(UserStates.wd_amount)
+
+@dp.message(UserStates.wd_amount)
+async def withdraw_final_process(message: Message, state: FSMContext):
+    """ودڈرا ریکوسٹ بنانا"""
+    try:
+        amount = float(message.text)
+        min_w = float(get_conf('min_withdraw'))
+        
+        db.execute("SELECT balance FROM users WHERE uid=?", (message.from_user.id,))
+        bal = db.fetchone()[0]
+        
+        if amount < min_w or amount > bal:
+            await message.answer(f"❌ <b>Invalid Amount!</b>\nMin: ${min_w} | Max: ${bal}")
+            return
+            
+        data = await state.get_data()
+        fee = round(amount * 0.0333, 4)
+        net = round(amount - fee, 4)
+        
+        # ڈیٹا بیس انٹری
+        db.execute("INSERT INTO withdraws (uid, address, amount, fee, net, timestamp) VALUES (?, ?, ?, ?, ?, ?)", 
+                   (message.from_user.id, data['wd_addr'], amount, fee, net, str(datetime.datetime.now())))
+        conn.commit()
+        
+        confirmation = (
+            "✅ <b>Withdrawal Request Sent!</b>\n\n"
+            "💳 Method: USDT (BEP-20)\n"
+            f"👛 Wallet: <code>{data['wd_addr']}</code>\n"
+            f"💵 Debit amount: ${amount:.4f}\n"
+            f"📉 Fee: ${fee:.4f}\n"
+            f"💰 You will receive: ${net:.4f}\n\n"
+            "<i>Status: Pending Admin Approval.</i>"
+        )
+        await message.answer(confirmation, parse_mode="HTML")
+        await bot.send_message(OWNER_ID, f"🔔 <b>NEW WITHDRAWAL!</b>\nUser: <code>{message.from_user.id}</code>\nAmount: ${amount}")
+        await state.clear()
+        
+    except ValueError:
+        await message.answer("❌ Please enter a numeric value only.")
+
+# ===================================================================================
+# 📑 ADMIN: PENDING TASKS MANAGEMENT (ٹاسک اپروول سسٹم)
+# ===================================================================================
+
+@dp.message(F.text == "📑 PENDING Task All")
+async def admin_view_tasks(message: Message, state: FSMContext):
+    await state.clear()
+    if not is_admin(message.from_user.id): return
+
+    db.execute("SELECT * FROM tasks WHERE status='pending' ORDER BY tid ASC")
+    tasks = db.fetchall()
+    
+    if not tasks:
+        await message.answer("📭 <b>All caught up!</b>\nNo pending tasks in queue.", parse_mode="HTML")
+        return
+
+    await message.answer(f"📊 <b>Pending Queue: {len(tasks)}</b>", parse_mode="HTML")
+    
+    for t in tasks:
+        kb = InlineKeyboardBuilder()
+        kb.row(InlineKeyboardButton(text="✅ Approve", callback_data=f"adm_t_app:{t[0]}"))
+        kb.row(InlineKeyboardButton(text="❌ Reject", callback_data=f"adm_t_rej_menu:{t[0]}"))
+        
+        info = (
+            f"🛠 <b>User ID:</b> <code>{t[1]}</code>\n"
+            f"📝 <b>Gmail:</b> <code>{t[2]}</code>\n"
+            f"🔑 <b>Pass:</b> <code>{t[3]}</code>\n"
+            f"📅 <b>Date:</b> {t[5]} | {t[6]}"
+        )
+        await message.answer(info, reply_markup=kb.as_markup(), parse_mode="HTML")
+
+@dp.callback_query(F.data.startswith("adm_t_app:"))
+async def admin_task_approve_final(call: CallbackQuery):
+    """ٹاسک اپروو کرنے کا فکسڈ فنکشن (Error Fixed)"""
+    tid = int(call.data.split(":")[1])
+    
+    db.execute("SELECT uid, status FROM tasks WHERE tid=?", (tid,))
+    task = db.fetchone()
+    
+    if not task or task[1] != 'pending':
+        await call.answer("Error: Task already processed.")
+        return
+        
+    uid = task[0]
+    rew = float(get_conf('reward'))
+    
+    try:
+        # بیلنس اپڈیٹ کریں اور ہولڈ خود بخود لائیو کیلکولیشن میں ختم ہو جائے گا
+        db.execute("UPDATE users SET balance = balance + ?, approved = approved + 1, total_earned = total_earned + ? WHERE uid=?", 
+                   (rew, rew, uid))
+        db.execute("UPDATE tasks SET status='approved' WHERE tid=?", (tid,))
+        
+        # ریفرل کمیشن سسٹم (اگر ریفرر موجود ہے)
+        db.execute("SELECT ref_by FROM users WHERE uid=?", (uid,))
+        ref_id = db.fetchone()[0]
+        if ref_id:
+            comm_pct = float(get_conf('invite_comm')) / 100
+            comm_amt = rew * comm_pct
+            db.execute("UPDATE users SET balance = balance + ? WHERE uid=?", (comm_amt, ref_id))
+            try: await bot.send_message(ref_id, f"🎁 <b>Referral Reward!</b>\nYou earned ${comm_amt:.4f} because your referral completed a task.", parse_mode="HTML")
+            except: pass
+            
+        conn.commit()
+        
+        await bot.send_message(uid, f"🔔 <b>TASK APPROVED!</b>\nReward: <b>${rew}</b> has been added to your balance. 💰", parse_mode="HTML")
+        await call.message.delete()
+        await call.answer("✅ Task Approved")
+    except Exception as e:
+        await call.answer(f"DB ERROR: {str(e)}", show_alert=True)
+
+@dp.callback_query(F.data.startswith("adm_t_rej_menu:"))
+async def admin_task_reject_options(call: CallbackQuery):
+    """ریجیکٹ وجوہات کا مینیو"""
+    tid = call.data.split(":")[1]
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="Wrong Password 🔑", callback_data=f"adm_t_finrej:{tid}:WPass"))
+    kb.row(InlineKeyboardButton(text="Device Limit ↩️", callback_data=f"adm_t_finrej:{tid}:Limit"))
+    kb.row(InlineKeyboardButton(text="Used Account ❌", callback_data=f"adm_t_finrej:{tid}:Used"))
+    kb.row(InlineKeyboardButton(text="Robot/Recaptcha 🤖", callback_data=f"adm_t_finrej:{tid}:Robot"))
+    await call.message.edit_reply_markup(reply_markup=kb.as_markup())
+    await call.answer()
+
+@dp.callback_query(F.data.startswith("adm_t_finrej:"))
+async def admin_task_reject_final(call: CallbackQuery):
+    """ٹاسک ریجیکٹ کرنے کا حتمی عمل"""
+    _, tid, code = call.data.split(":")
+    
+    db.execute("SELECT uid, gmail, password FROM tasks WHERE tid=?", (tid,))
+    t_data = db.fetchone()
+    if not t_data: return
+    
+    uid = t_data[0]
+    reason = {"WPass": "Wrong Password", "Limit": "Device Removal Required", "Used": "Already Used Account", "Robot": "Robot Verification Required"}.get(code, "Unknown")
+    
+    db.execute("UPDATE tasks SET status='rejected' WHERE tid=?", (tid,))
+    db.execute("UPDATE users SET rejected = rejected + 1 WHERE uid=?", (uid,))
+    conn.commit()
+    
+    rej_msg = (
+        "❌ <b>TASK REJECTED!</b>\n"
+        f"Reason: <i>{reason}</i>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"📧 Gmail: <code>{t_data[1]}</code>\n"
+        f"🔑 Pass: <code>{t_data[2]}</code>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "Please fix the issue and submit again."
+    )
+    try: await bot.send_message(uid, rej_msg, parse_mode="HTML")
+    except: pass
+    
+    await call.message.delete()
+    await call.answer("Task Rejected ❌")
+
+# ===================================================================================
+# 💻 ADMIN: WITHDRAWAL MANAGEMENT (ودڈرا مینیو)
+# ===================================================================================
+
+@dp.message(F.text == "💻 Pending Withdraw")
+async def admin_view_withdraws(message: Message, state: FSMContext):
+    """ودڈرا کی درخواستیں دیکھنا"""
+    await state.clear()
+    if not is_admin(message.from_user.id): return
+    
+    db.execute("SELECT * FROM withdraws WHERE status='pending'")
+    wds = db.fetchall()
+    
+    if not wds:
+        await message.answer("📭 No pending withdrawals.")
+        return
+        
+    for w in wds:
+        kb = InlineKeyboardBuilder()
+        kb.row(InlineKeyboardButton(text="✅ Pay Now", callback_data=f"adm_w_pay:{w[0]}"))
+        kb.row(InlineKeyboardButton(text="❌ Reject", callback_data=f"adm_w_rej:{w[0]}"))
+        
+        info = (
+            f"🛠 <b>User ID:</b> <code>{w[1]}</code>\n"
+            f"📄 <b>Address:</b> <code>{w[2]}</code>\n"
+            f"🔍 <b>Debit:</b> ${w[3]:.4f}\n"
+            f"📮 <b>To Send:</b> <b>${w[5]:.4f}</b>"
+        )
+        await message.answer(info, reply_markup=kb.as_markup(), parse_mode="HTML")
+
+@dp.callback_query(F.data.startswith("adm_w_pay:"))
+async def admin_pay_init(call: CallbackQuery, state: FSMContext):
+    """ودڈرا اپروول کے لیے ٹیکس آئی ڈی مانگنا"""
+    wid = call.data.split(":")[1]
+    await call.message.answer("📩 Please enter the <b>Transaction ID (TxID)</b> to confirm payment:", parse_mode="HTML")
+    await state.update_data(active_wid=wid)
+    await state.set_state(AdminStates.txid_input)
+    await call.answer()
+@dp.message(AdminStates.txid_input)
+async def admin_pay_confirm(message: Message, state: FSMContext):
+    """ودڈرا کامیاب کرنا - فکسڈ ورژن"""
+    txid = message.text.strip()
+    data = await state.get_data()
+    wid = data.get('active_wid')
+    
+    if not wid:
+        await message.answer("❌ Error: Withdrawal ID not found in session.")
+        await state.clear()
+        return
+
+    try:
+        # چیک کریں کہ ودڈرا موجود ہے یا نہیں
+        db.execute("SELECT uid, amount, net FROM withdraws WHERE wid=?", (wid,))
+        w_info = db.fetchone()
+        
+        if not w_info:
+            await message.answer("❌ Error: Withdrawal record not found in database.")
+            return
+        
+        uid, amt, net = w_info[0], w_info[1], w_info[2]
+        
+        # ڈیٹا بیس اپڈیٹ (یہاں غلطی تھی جو اب ٹھیک کر دی گئی ہے)
+        db.execute("UPDATE withdraws SET status='success', txid=? WHERE wid=?", (txid, wid))
+        db.execute("UPDATE users SET balance = balance - ?, total_withdrawn = total_withdrawn + ? WHERE uid=?", (amt, amt, uid))
+        conn.commit()
+        
+        user_alert = (
+            "✅ <b>WITHDRAWAL SUCCESSFUL!</b>\n\n"
+            f"💰 Net Amount: <b>${net:.4f}</b>\n"
+            f"⛓ TxID: <code>{txid}</code>\n\n"
+            "<i>Thank you for working with us!</i>"
+        )
+        
+        try: 
+            await bot.send_message(uid, user_alert, parse_mode="HTML")
+        except: 
+            pass
+        
+        await message.answer(f"✅ Withdrawal Approved!\nUser ID: {uid}\nTxID: {txid}")
+        await state.clear()
+
+    except Exception as e:
+        await message.answer(f"⚠️ Database Error: {str(e)}")
+        print(f"Error in admin_pay_confirm: {e}")
+# ===================================================================================
+# 📊 STATISTICS & INFO (صارف کے اعداد و شمار)
+# ===================================================================================
+
+@dp.message(F.text == "📊  My STATS")
+async def user_dashboard(message: Message, state: FSMContext):
+    """صارف کا ڈیش بورڈ (FIXED: DYNAMIC HOLD)"""
+    await state.clear()
+    uid = message.from_user.id
+    db.execute("SELECT * FROM users WHERE uid=?", (uid,))
+    u = db.fetchone()
+    
+    db.execute("SELECT COUNT(*) FROM tasks WHERE uid=?", (uid,))
+    total_t = db.fetchone()[0]
+    
+    # یہاں سے تبدیلی شروع (Hold Calculation)
+    rew = float(get_conf('reward'))
+    db.execute("SELECT COUNT(*) FROM tasks WHERE uid=? AND status='pending'", (uid,))
+    pending_count = db.fetchone()[0]
+    hld = pending_count * rew
+    
+    text = (
+        f"👤 <b>USER DASHBOARD: {uid}</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"💰 Main Balance: <b>${u[1]:.2f}</b>\n"
+        f"⏳ Hold Balance: <b>${hld:.2f}</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"📝 Submitted: {total_t}\n"
+        f"✅ Approved: {u[4]}\n"
+        f"❌ Rejected: {u[5]}\n"
+        f"🏅 Total Earned: <b>${u[7]:.2f}</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"📅 Joined: {u[9]}"
+    )
+    await message.answer(text, parse_mode="HTML")
+
+@dp.message(F.text == "👥 My referrals")
+async def referral_system(message: Message, state: FSMContext):
+    """ریفرل سسٹم"""
+    await state.clear()
+    uid = message.from_user.id
+    db.execute("SELECT COUNT(*) FROM users WHERE ref_by=?", (uid,))
+    count = db.fetchone()[0]
+    
+    bot_me = await bot.get_me()
+    ref_link = f"https://t.me/{bot_me.username}?start={uid}"
+    
+    text = (
+        "👥 <b>REFERRAL PROGRAM</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"Total Invited: <b>{count} Users</b>\n"
+        f"Current Commission: <b>{get_conf('invite_comm')}%</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "Invite your friends and earn commission whenever they complete a task!\n\n"
+        f"🔗 <b>Your Link:</b>\n<code>{ref_link}</code>"
+    )
+    await message.answer(text, parse_mode="HTML")
+
+# ===================================================================================
+# ⚙️ ADMIN: UTILITY TOOLS (ایڈمن کے دیگر ٹولز)
+# ===================================================================================
+
+# 1. Minus Balance Button
+@dp.message(F.text == "➖ Minus Balance")
+async def admin_minus_bal_start(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id): return
+    await message.answer("Enter <b>User ID</b> and <b>Amount</b> to subtract:\n(Format: 12345 0.50)", parse_mode="HTML")
+    await state.set_state(AdminStates.min_bal)
+
+@dp.message(AdminStates.min_bal)
+async def admin_minus_bal_final(message: Message, state: FSMContext):
+    try:
+        uid, amt = message.text.split()
+        db.execute("UPDATE users SET balance = balance - ? WHERE uid=?", (float(amt), uid))
+        conn.commit()
+        await message.answer(f"✅ Subtracted ${amt} from {uid}")
+        log_history(uid, "Admin Deduct", -float(amt))
+    except Exception as e: await message.answer(f"Error: {e}")
+    await state.clear()
+
+# 2. Set Amount (Reward) Button
+@dp.message(F.text == "⚙️ Set Amount")
+async def admin_set_amt_start(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id): return
+    await message.answer(f"Current Reward: ${get_conf('reward')}\nEnter new reward amount:")
+    await state.set_state(AdminStates.set_amt)
+
+@dp.message(AdminStates.set_amt)
+async def admin_set_amt_final(message: Message, state: FSMContext):
+    try:
+        new_amt = float(message.text)
+        db.execute("UPDATE config SET val=? WHERE key='reward'", (str(new_amt),))
+        conn.commit()
+        await message.answer(f"✅ Reward updated to: ${new_amt}")
+    except: await message.answer("Invalid amount.")
+    await state.clear()
+
+# 3. Set Gmail Password Button
+@dp.message(F.text == "🔑 Set Gmail password")
+async def admin_set_pass_start(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id): return
+    await message.answer(f"Current Pass: {get_conf('gmail_pass')}\nEnter new password:")
+    await state.set_state(AdminStates.set_pass)
+
+@dp.message(AdminStates.set_pass)
+async def admin_set_pass_final(message: Message, state: FSMContext):
+    new_pass = message.text.strip()
+    db.execute("UPDATE config SET val=? WHERE key='gmail_pass'", (new_pass,))
+    conn.commit()
+    await message.answer(f"✅ Password updated to: {new_pass}")
+    await state.clear()
+
+# 4. All Stats Button
+@dp.message(F.text == "📊 All Stats")
+async def admin_all_stats(message: Message, state: FSMContext):
+    await state.clear()
+    if not is_admin(message.from_user.id): return
+    db.execute("SELECT COUNT(uid), SUM(balance), SUM(total_withdrawn) FROM users")
+    u_stats = db.fetchone()
+    db.execute("SELECT COUNT(*) FROM tasks WHERE status='approved'")
+    app_t = db.fetchone()[0]
+    db.execute("SELECT COUNT(*) FROM tasks WHERE status='pending'")
+    pen_t = db.fetchone()[0]
+    
+    text = (
+        "🌐 <b>GLOBAL SYSTEM STATS</b>\n\n"
+        f"👥 Total Users: {u_stats[0]}\n"
+        f"💰 Total User Bal: ${u_stats[1]:.2f}\n"
+        f"🏦 Total Paid: ${u_stats[2]:.2f}\n"
+        f"✅ Approved Tasks: {app_t}\n"
+        f"⏳ Pending Tasks: {pen_t}"
+    )
+    await message.answer(text, parse_mode="HTML")
+
+# 5. Admin Management Button (FIXED: LIST VIEW & DELETE)
+@dp.message(F.text == "👤 Admin Management")
+async def admin_manage_menu(message: Message, state: FSMContext):
+    await state.clear()
+    if not is_admin(message.from_user.id): return
+    
+    db.execute("SELECT uid FROM admins")
+    admins = db.fetchall()
+    
+    kb = InlineKeyboardBuilder()
+    
+    # مالک کی تفصیل
+    kb.row(InlineKeyboardButton(text=f"👑 Owner: {OWNER_ID}", callback_data="none"))
+    
+    # باقی تمام ایڈمنز کی لسٹ
+    for adm in admins:
+        if adm[0] != OWNER_ID:
+            kb.row(
+                InlineKeyboardButton(text=f"👤 {adm[0]}", callback_data="none"),
+                InlineKeyboardButton(text="❌ Delete", callback_data=f"adm_del:{adm[0]}")
+            )
+            
+    kb.row(InlineKeyboardButton(text="➕ Add Admin", callback_data="adm_add"))
+    await message.answer("🛠️ <b>Admin Control Panel</b>\nList of current admins:", reply_markup=kb.as_markup(), parse_mode="HTML")
+
+@dp.callback_query(F.data == "adm_add")
+async def adm_add_start(call: CallbackQuery, state: FSMContext):
+    await call.message.answer("Enter User ID to make Admin:")
+    await state.set_state(AdminStates.add_admin)
+    await call.answer()
+
+@dp.callback_query(F.data.startswith("adm_del:"))
+async def adm_delete_handler(call: CallbackQuery):
+    target_id = int(call.data.split(":")[1])
+    db.execute("DELETE FROM admins WHERE uid=?", (target_id,))
+    conn.commit()
+    await call.answer(f"Admin {target_id} deleted successfully.")
+    # مینیو کو ریفریش کریں
+    await admin_manage_menu(call.message, FSMContext(bot, dp, call.from_user.id))
+
+@dp.message(AdminStates.add_admin)
+async def adm_add_final(message: Message, state: FSMContext):
+    try:
+        aid = int(message.text)
+        db.execute("INSERT OR IGNORE INTO admins VALUES (?)", (aid,))
+        conn.commit()
+        await message.answer(f"✅ {aid} is now an Admin.")
+    except: await message.answer("Enter valid ID.")
+    await state.clear()
+
+# 6. UnBan User Button
+@dp.message(F.text == "🔧 UnBan User")
+async def admin_unban_start(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id): return
+    await message.answer("Enter User ID to Unban:")
+    await state.set_state(AdminStates.unban_user)
+
+@dp.message(AdminStates.unban_user)
+async def admin_unban_final(message: Message, state: FSMContext):
+    db.execute("UPDATE users SET banned=0 WHERE uid=?", (message.text,))
+    conn.commit()
+    await message.answer(f"✅ User {message.text} Unbanned.")
+    await state.clear()
+
+# 7. History Button (FIXED FORMAT: PENDING, APPROVED, LOGS, SUMMARY)
+# 8. History Button (FIXED: SHOW PENDING, APPROVED, AND REJECTED GMAIL)
+@dp.message(F.text == "📜 History")
+async def admin_history_start(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id): return
+    await message.answer("🔍 Enter User ID to view complete account history:", parse_mode="HTML")
+    await state.set_state(AdminStates.history_id)
+
+@dp.message(AdminStates.history_id)
+async def admin_history_view(message: Message, state: FSMContext):
+    uid = message.text.strip()
+    rew = get_conf('reward')
+    
+    # یوزر کے بیلنس اور سٹیٹس چیک کریں
+    db.execute("SELECT total_earned, total_withdrawn, balance FROM users WHERE uid=?", (uid,))
+    user_stats = db.fetchone()
+    
+    if not user_stats:
+        await message.answer(f"❌ <b>Error:</b> User ID <code>{uid}</code> not found in database.", parse_mode="HTML")
+        await state.clear()
+        return
+
+    # 1. پینڈنگ ٹاسک نکالنا
+    db.execute("SELECT gmail, password FROM tasks WHERE uid=? AND status='pending'", (uid,))
+    pending_tasks = db.fetchall()
+    
+    # 2. اپرووڈ ٹاسک نکالنا
+    db.execute("SELECT gmail, password FROM tasks WHERE uid=? AND status='approved'", (uid,))
+    approved_tasks = db.fetchall()
+
+    # 3. ریجیکٹڈ ٹاسک نکالنا (نیا اضافہ)
+    db.execute("SELECT gmail, password FROM tasks WHERE uid=? AND status='rejected'", (uid,))
+    rejected_tasks = db.fetchall()
+    
+    # --- میسج کی ڈیزائننگ شروع ---
+    output = f"📋 <b>COMPLETE HISTORY FOR:</b> <code>{uid}</code>\n"
+    output += "━━━━━━━━━━━━━━━━━━\n\n"
+    
+    # ⏳ PENDING SECTION
+    output += "⏳ <b><u>PENDING GMAIL</u></b>\n"
+    output += "<i>Gmail | Reward | Password</i>\n"
+    if pending_tasks:
+        for pt in pending_tasks:
+            output += f"📧 <code>{pt[0]}</code> | ${rew} | 🔑 <code>{pt[1]}</code>\n"
+    else:
+        output += "<i>(No Pending Tasks)</i>\n"
+        
+    # ✅ APPROVED SECTION
+    output += "\n✅ <b><u>APPROVED GMAIL</u></b>\n"
+    output += "<i>Gmail | Reward | Password</i>\n"
+    if approved_tasks:
+        for at in approved_tasks:
+            output += f"📧 <code>{at[0]}</code> | ${rew} | 🔑 <code>{at[1]}</code>\n"
+    else:
+        output += "<i>(No Approved Tasks)</i>\n"
+
+    # ❌ REJECTED SECTION
+    output += "\n❌ <b><u>REJECTED GMAIL</u></b>\n"
+    output += "<i>Gmail | Reward | Password</i>\n"
+    if rejected_tasks:
+        for rt in rejected_tasks:
+            output += f"📧 <code>{rt[0]}</code> | ${rew} | 🔑 <code>{rt[1]}</code>\n"
+    else:
+        output += "<i>(No Rejected Tasks)</i>\n"
+        
+    # 💰 SUMMARY SECTION
+    output += "\n━━━━━━━━━━━━━━━━━━\n"
+    output += f"💵 <b>Current Balance:</b> ${user_stats[2]:.2f}\n"
+    output += f"🏆 <b>Total Earnings:</b> ${user_stats[0]:.2f}\n"
+    output += f"💸 <b>Total Withdrawn:</b> ${user_stats[1]:.2f}"
+    
+    # میسج بہت لمبا ہو سکتا ہے اس لیے اسے محفوظ طریقے سے بھیجنا
+    try:
+        await message.answer(output, parse_mode="HTML")
+    except Exception as e:
+        await message.answer("⚠️ History is too long to display in one message.")
+        
+    await state.clear()
+# 8. Add Balance Button (Existing)
+@dp.message(F.text == "➕ Add Balance")
+async def admin_add_bal_start(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id): return
+    await message.answer("Enter ID and Amount:")
+    await state.set_state(AdminStates.add_bal)
+
+@dp.message(AdminStates.add_bal)
+async def admin_add_bal_final(message: Message, state: FSMContext):
+    try:
+        uid, amt = message.text.split()
+        db.execute("UPDATE users SET balance = balance + ? WHERE uid=?", (float(amt), uid))
+        conn.commit()
+        log_history(uid, "Admin Add", float(amt)) 
+        await message.answer(f"✅ Added ${amt} to {uid}")
+    except: await message.answer("Format error.")
+    await state.clear()
+
+# ===================================================================================
+# 📢 OTHER UTILITIES
+# ===================================================================================
+
+@dp.message(F.text == "📢 Broadcast")
+async def admin_bc_start(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id): return
+    await message.answer("Enter Message:")
+    await state.set_state(AdminStates.broadcast)
+
+@dp.message(AdminStates.broadcast)
+async def admin_bc_final(message: Message, state: FSMContext):
+    db.execute("SELECT uid FROM users")
+    users = db.fetchall()
+    for u in users:
+        try: await bot.send_message(u[0], message.text)
+        except: pass
+    await message.answer("✅ Broadcast Sent.")
+    await state.clear()
+
+@dp.message(F.text == "🟢 Start Orders")
+@dp.message(F.text == "🛑 Stop Orders")
+async def toggle_ord(message: Message, state: FSMContext):
+    await state.clear()
+    if not is_admin(message.from_user.id): return
+    st = "ON" if "Start" in message.text else "OFF"
+    db.execute("UPDATE config SET val=? WHERE key='order_status'", (st,))
+    conn.commit()
+    await message.answer(f"Orders: {st}")
+
+@dp.message(F.text == "🚫 Ban User")
+async def ban_st(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id): return
+    await message.answer("ID to ban:")
+    await state.set_state(AdminStates.ban_user)
+
+@dp.message(AdminStates.ban_user)
+async def ban_fin(message: Message, state: FSMContext):
+    db.execute("UPDATE users SET banned=1 WHERE uid=?", (message.text,))
+    conn.commit()
+    await message.answer("Banned.")
+    await state.clear()
+
+@dp.message(F.text == "🔙 Back to User Menu")
+async def back_usr(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Switched.", reply_markup=get_user_menu())
+
+# ===================================================================================
+# 🏁 APP RUNNER
+# ===================================================================================
+
+async def main():
+    print("Bot is Running...")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    try: asyncio.run(main())
+    except: pass

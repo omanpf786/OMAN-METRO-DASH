@@ -1,0 +1,2867 @@
+name: Build Watchbux Official APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Python for Icon Processing
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install Pillow
+        run: pip install pillow
+
+      - name: Install Android Platform 34 & Build Tools
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Create Structure
+        run: |
+          mkdir -p app/src/main/java/com/fomo/earn
+          mkdir -p app/src/main/res/drawable
+          mkdir -p app/src/main/res/layout
+          mkdir -p app/src/main/res/xml
+          mkdir -p app/src/main/res/values
+          mkdir -p app/src/main/res/mipmap-mdpi
+          mkdir -p app/src/main/res/mipmap-hdpi
+          mkdir -p app/src/main/res/mipmap-xhdpi
+          mkdir -p app/src/main/res/mipmap-xxhdpi
+          mkdir -p app/src/main/res/mipmap-xxxhdpi
+          mkdir -p app/src/main/res/mipmap-anydpi-v26
+
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+
+      # Finds and converts your uploaded logo.png into all Android launcher densities
+      - name: Process Exact Watchbux Launcher Icons
+        run: |
+          python3 - << 'EOF'
+          import os, sys
+          from PIL import Image
+
+          user_images = []
+          for root, dirs, files in os.walk("."):
+              if ".git" in root or "app/build" in root or "gradle" in root:
+                  continue
+              for f in files:
+                  if f.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+                      if not root.startswith("./app/src/main/res"):
+                          user_images.append(os.path.join(root, f))
+
+          print("--> Discovered images in repository:", user_images)
+
+          if not user_images:
+              print("FATAL ERROR: logo.png not found! Please upload your logo.")
+              sys.exit(1)
+
+          user_images.sort(key=lambda x: 0 if any(k in x.lower() for k in ["logo", "watchbux", "icon"]) else 1)
+          chosen_image = user_images[0]
+          print(f"--> [SUCCESS] Using your exact Watchbux logo: {chosen_image}")
+
+          base_img = Image.open(chosen_image).convert("RGBA")
+
+          densities = {
+              "mipmap-mdpi": 48,
+              "mipmap-hdpi": 72,
+              "mipmap-xhdpi": 96,
+              "mipmap-xxhdpi": 144,
+              "mipmap-xxxhdpi": 192
+          }
+
+          for folder, size in densities.items():
+              resized = base_img.resize((size, size), Image.Resampling.LANCZOS)
+              resized.save(f"app/src/main/res/{folder}/ic_launcher.png", format="PNG")
+              resized.save(f"app/src/main/res/{folder}/ic_launcher_round.png", format="PNG")
+
+          splash = base_img.resize((256, 256), Image.Resampling.LANCZOS)
+          splash.save("app/src/main/res/drawable/ic_logo.png", format="PNG")
+
+          fg = Image.new("RGBA", (432, 432), (0, 0, 0, 0))
+          safe_logo = base_img.resize((300, 300), Image.Resampling.LANCZOS)
+          fg.paste(safe_logo, (66, 66), safe_logo)
+          fg.save("app/src/main/res/drawable/ic_launcher_foreground.png", format="PNG")
+          EOF
+
+      - name: Generate Gradle Setup
+        run: |
+          cat << 'EOF' > gradle.properties
+          android.useAndroidX=true
+          android.enableJetifier=true
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          EOF
+
+          cat << 'EOF' > settings.gradle
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "Watchbux"
+          include ':app'
+          EOF
+
+          cat << 'EOF' > build.gradle
+          plugins { id 'com.android.application' version '8.2.2' apply false }
+          EOF
+
+          cat << 'EOF' > app/build.gradle
+          plugins { id 'com.android.application' }
+
+          android {
+              namespace 'com.fomo.earn'
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId "com.fomo.earn"
+                  minSdk 24
+                  targetSdk 34
+                  versionCode 10
+                  versionName "1.1.0"
+              }
+
+              buildTypes {
+                  release { minifyEnabled false }
+                  debug { minifyEnabled false }
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+
+          dependencies {
+              implementation 'androidx.appcompat:appcompat:1.6.1'
+              implementation 'com.google.android.material:material:1.11.0'
+              implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+          }
+          EOF
+
+      - name: Create Drawables & Layouts
+        run: |
+          cat << 'EOF' > app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/ic_launcher_background" />
+              <foreground android:drawable="@drawable/ic_launcher_foreground" />
+          </adaptive-icon>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/ic_launcher_background" />
+              <foreground android:drawable="@drawable/ic_launcher_foreground" />
+          </adaptive-icon>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/values/colors.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="ic_launcher_background">#060B28</color>
+          </resources>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/drawable/bg_pill_blue.xml
+          <shape xmlns:android="http://schemas.android.com/apk/res/android">
+              <solid android:color="#E60284C7" />
+              <corners android:radius="24dp" />
+              <stroke android:color="#38BDF8" android:width="1.5dp" />
+          </shape>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/drawable/bg_grant_purple.xml
+          <shape xmlns:android="http://schemas.android.com/apk/res/android">
+              <solid android:color="#7C3AED" />
+              <corners android:radius="20dp" />
+          </shape>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/drawable/bg_granted_green.xml
+          <shape xmlns:android="http://schemas.android.com/apk/res/android">
+              <solid android:color="#DCFCE7" />
+              <stroke android:color="#86EFAC" android:width="1dp" />
+              <corners android:radius="20dp" />
+          </shape>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/drawable/bg_start_disabled.xml
+          <shape xmlns:android="http://schemas.android.com/apk/res/android">
+              <solid android:color="#E5E7EB" />
+              <corners android:radius="28dp" />
+          </shape>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/drawable/bg_start_enabled.xml
+          <shape xmlns:android="http://schemas.android.com/apk/res/android">
+              <solid android:color="#7C3AED" />
+              <corners android:radius="28dp" />
+          </shape>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/drawable/bg_permission_item.xml
+          <shape xmlns:android="http://schemas.android.com/apk/res/android">
+              <solid android:color="#F7F8FB" />
+              <stroke android:color="#EEF0F5" android:width="1dp" />
+              <corners android:radius="16dp" />
+          </shape>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/values/strings.xml
+          <resources>
+              <string name="app_name">Watchbux</string>
+              <string name="acc_desc">Automated YouTube watch verification engine.</string>
+          </resources>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/xml/accessibility_service_config.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows|flagReportViewIds"
+              android:canRetrieveWindowContent="true"
+              android:description="@string/acc_desc"
+              android:notificationTimeout="60"
+              android:packageNames="com.google.android.youtube" />
+          EOF
+
+          cat << 'EOF' > app/src/main/res/layout/activity_splash.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent"
+              android:background="#060B28">
+              <LinearLayout
+                  android:layout_width="wrap_content"
+                  android:layout_height="wrap_content"
+                  android:layout_centerInParent="true"
+                  android:gravity="center"
+                  android:orientation="vertical">
+                  <ImageView
+                      android:layout_width="140dp"
+                      android:layout_height="140dp"
+                      android:src="@drawable/ic_logo" />
+              </LinearLayout>
+          </RelativeLayout>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/layout/activity_main.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent">
+              <WebView
+                  android:id="@+id/mainWebView"
+                  android:layout_width="match_parent"
+                  android:layout_height="match_parent" />
+          </RelativeLayout>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/layout/bottomsheet_permission.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="wrap_content"
+              android:background="#FFFFFF"
+              android:orientation="vertical"
+              android:padding="24dp">
+
+              <RelativeLayout
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content">
+                  <TextView
+                      android:text="Grant permissions to start"
+                      android:textStyle="bold"
+                      android:textSize="18sp"
+                      android:textColor="#111111"
+                      android:layout_width="wrap_content"
+                      android:layout_height="wrap_content"/>
+                  <TextView
+                      android:id="@+id/btn_close"
+                      android:text="✕"
+                      android:textSize="18sp"
+                      android:textColor="#9CA3AF"
+                      android:padding="4dp"
+                      android:layout_alignParentEnd="true"
+                      android:layout_width="wrap_content"
+                      android:layout_height="wrap_content"/>
+              </RelativeLayout>
+
+              <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#EEEEEE" android:layout_marginTop="16dp"/>
+
+              <TextView
+                  android:text="These allow the app to watch videos and count your earnings automatically. Tap Grant on each, then Start watching."
+                  android:textSize="13sp"
+                  android:textColor="#6B7280"
+                  android:layout_marginTop="14dp"
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"/>
+
+              <!-- 1. Accessibility Service -->
+              <LinearLayout
+                  android:background="@drawable/bg_permission_item"
+                  android:layout_marginTop="16dp"
+                  android:padding="14dp"
+                  android:gravity="center_vertical"
+                  android:orientation="horizontal"
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content">
+                  <LinearLayout android:layout_weight="1" android:orientation="vertical" android:layout_width="0dp" android:layout_height="wrap_content">
+                      <TextView android:text="Accessibility service" android:textStyle="bold" android:textSize="13sp" android:textColor="#111" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+                      <TextView android:id="@+id/tv_desc_a11y" android:text="Monitors YouTube playback status." android:textSize="11sp" android:textColor="#6B7280" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+                  </LinearLayout>
+                  <TextView android:id="@+id/btn_grant_accessibility" android:text="Grant" android:background="@drawable/bg_grant_purple" android:textColor="#FFFFFF" android:paddingHorizontal="18dp" android:paddingVertical="7dp" android:textStyle="bold" android:textSize="12sp" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+              </LinearLayout>
+
+              <!-- 2. Overlay Permission -->
+              <LinearLayout
+                  android:background="@drawable/bg_permission_item"
+                  android:layout_marginTop="10dp"
+                  android:padding="14dp"
+                  android:gravity="center_vertical"
+                  android:orientation="horizontal"
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content">
+                  <LinearLayout android:layout_weight="1" android:orientation="vertical" android:layout_width="0dp" android:layout_height="wrap_content">
+                      <TextView android:text="Display over other apps" android:textStyle="bold" android:textSize="13sp" android:textColor="#111" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+                      <TextView android:text="Shows timer on top of YouTube." android:textSize="11sp" android:textColor="#6B7280" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+                  </LinearLayout>
+                  <TextView android:id="@+id/btn_grant_overlay" android:text="Grant" android:background="@drawable/bg_grant_purple" android:textColor="#FFFFFF" android:paddingHorizontal="18dp" android:paddingVertical="7dp" android:textStyle="bold" android:textSize="12sp" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+              </LinearLayout>
+
+              <!-- 3. System Write Settings -->
+              <LinearLayout
+                  android:background="@drawable/bg_permission_item"
+                  android:layout_marginTop="10dp"
+                  android:padding="14dp"
+                  android:gravity="center_vertical"
+                  android:orientation="horizontal"
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content">
+                  <LinearLayout android:layout_weight="1" android:orientation="vertical" android:layout_width="0dp" android:layout_height="wrap_content">
+                      <TextView android:text="Modify system settings" android:textStyle="bold" android:textSize="13sp" android:textColor="#111" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+                      <TextView android:text="Keeps screen awake during video watch." android:textSize="11sp" android:textColor="#6B7280" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+                  </LinearLayout>
+                  <TextView android:id="@+id/btn_grant_write" android:text="Grant" android:background="@drawable/bg_grant_purple" android:textColor="#FFFFFF" android:paddingHorizontal="18dp" android:paddingVertical="7dp" android:textStyle="bold" android:textSize="12sp" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+              </LinearLayout>
+
+              <!-- 4. Battery Optimization -->
+              <LinearLayout
+                  android:background="@drawable/bg_permission_item"
+                  android:layout_marginTop="10dp"
+                  android:padding="14dp"
+                  android:gravity="center_vertical"
+                  android:orientation="horizontal"
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content">
+                  <LinearLayout android:layout_weight="1" android:orientation="vertical" android:layout_width="0dp" android:layout_height="wrap_content">
+                      <TextView android:text="Ignore battery optimization" android:textStyle="bold" android:textSize="13sp" android:textColor="#111" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+                      <TextView android:text="Prevents Android disabling service." android:textSize="11sp" android:textColor="#6B7280" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+                  </LinearLayout>
+                  <TextView android:id="@+id/btn_grant_battery" android:text="Grant" android:background="@drawable/bg_grant_purple" android:textColor="#FFFFFF" android:paddingHorizontal="18dp" android:paddingVertical="7dp" android:textStyle="bold" android:textSize="12sp" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+              </LinearLayout>
+
+              <Button
+                  android:id="@+id/btn_start_watching"
+                  android:text="START WATCHING"
+                  android:enabled="false"
+                  android:background="@drawable/bg_start_disabled"
+                  android:textColor="#8A8A8A"
+                  android:textStyle="bold"
+                  android:textSize="14sp"
+                  android:layout_marginTop="20dp"
+                  android:layout_width="match_parent"
+                  android:layout_height="52dp"/>
+          </LinearLayout>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/layout/floating_timer_overlay.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="wrap_content"
+              android:layout_height="wrap_content"
+              android:orientation="horizontal"
+              android:gravity="center"
+              android:padding="2dp">
+
+              <LinearLayout
+                  android:layout_width="wrap_content"
+                  android:layout_height="wrap_content"
+                  android:background="@drawable/bg_pill_blue"
+                  android:paddingHorizontal="20dp"
+                  android:paddingVertical="7dp"
+                  android:gravity="center">
+                  <TextView
+                      android:id="@+id/tv_floating_seconds"
+                      android:layout_width="wrap_content"
+                      android:layout_height="wrap_content"
+                      android:text="1 / 15"
+                      android:textColor="#FFFFFF"
+                      android:textSize="15sp"
+                      android:textStyle="bold" />
+              </LinearLayout>
+          </LinearLayout>
+          EOF
+
+          cat << 'EOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+              xmlns:tools="http://schemas.android.com/tools">
+
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+              <uses-permission android:name="android.permission.WRITE_SETTINGS" tools:ignore="ProtectedPermissions" />
+              <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+              <queries>
+                  <package android:name="com.google.android.youtube" />
+                  <intent>
+                      <action android:name="android.intent.action.VIEW" />
+                      <data android:scheme="https" />
+                  </intent>
+              </queries>
+
+              <application
+                  android:allowBackup="true"
+                  android:icon="@mipmap/ic_launcher"
+                  android:roundIcon="@mipmap/ic_launcher_round"
+                  android:label="@string/app_name"
+                  android:supportsRtl="true"
+                  android:theme="@style/Theme.AppCompat.NoActionBar"
+                  android:usesCleartextTraffic="true">
+
+                  <activity
+                      android:name=".SplashActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:configChanges="orientation|screenSize|keyboardHidden"
+                      android:exported="false" />
+
+                  <service
+                      android:name=".AutoWatchService"
+                      android:exported="true"
+                      android:label="Watchbux Engine"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.accessibilityservice"
+                          android:resource="@xml/accessibility_service_config" />
+                  </service>
+              </application>
+          </manifest>
+          EOF
+
+      - name: Generate Java Logic
+        run: |
+          cat << 'EOF' > app/src/main/java/com/fomo/earn/SplashActivity.java
+          package com.fomo.earn;
+
+          import android.annotation.SuppressLint;
+          import android.content.Intent;
+          import android.os.Bundle;
+          import android.os.Handler;
+          import android.os.Looper;
+          import androidx.appcompat.app.AppCompatActivity;
+
+          @SuppressLint("CustomSplashScreen")
+          public class SplashActivity extends AppCompatActivity {
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  setContentView(R.layout.activity_splash);
+
+                  new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                      startActivity(new Intent(SplashActivity.this, MainActivity.class));
+                      finish();
+                  }, 1200);
+              }
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/fomo/earn/PermissionBottomSheet.java
+          package com.fomo.earn;
+
+          import android.content.Context;
+          import android.content.Intent;
+          import android.graphics.Color;
+          import android.net.Uri;
+          import android.os.Bundle;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.os.PowerManager;
+          import android.provider.Settings;
+          import android.view.LayoutInflater;
+          import android.view.View;
+          import android.view.ViewGroup;
+          import android.widget.Button;
+          import android.widget.TextView;
+          import androidx.annotation.NonNull;
+          import androidx.annotation.Nullable;
+          import com.google.android.material.bottomsheet.BottomSheetDialogFragment;
+
+          public class PermissionBottomSheet extends BottomSheetDialogFragment {
+
+              private TextView btn1, btn2, btn3, btn4, tvDesc1;
+              private Button btnStart;
+              private int targetUserId = 1;
+
+              private Handler pollHandler = new Handler(Looper.getMainLooper());
+              private Runnable pollRunnable;
+
+              public static PermissionBottomSheet newInstance(int uId) {
+                  PermissionBottomSheet fragment = new PermissionBottomSheet();
+                  Bundle args = new Bundle();
+                  args.putInt("user_id", uId);
+                  fragment.setArguments(args);
+                  return fragment;
+              }
+
+              @Nullable
+              @Override
+              public View onCreateView(@NonNull LayoutInflater inflater, @Nullable ViewGroup container, @Nullable Bundle savedInstanceState) {
+                  return inflater.inflate(R.layout.bottomsheet_permission, container, false);
+              }
+
+              @Override
+              public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
+                  super.onViewCreated(view, savedInstanceState);
+
+                  try {
+                      if (getArguments() != null) {
+                          targetUserId = getArguments().getInt("user_id", 1);
+                      }
+
+                      btn1 = view.findViewById(R.id.btn_grant_accessibility);
+                      btn2 = view.findViewById(R.id.btn_grant_overlay);
+                      btn3 = view.findViewById(R.id.btn_grant_write);
+                      btn4 = view.findViewById(R.id.btn_grant_battery);
+                      tvDesc1 = view.findViewById(R.id.tv_desc_a11y);
+                      btnStart = view.findViewById(R.id.btn_start_watching);
+
+                      view.findViewById(R.id.btn_close).setOnClickListener(v -> dismiss());
+
+                      if (btn1 != null) {
+                          btn1.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
+                      }
+                      if (btn2 != null) {
+                          btn2.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + requireContext().getPackageName()))));
+                      }
+                      if (btn3 != null) {
+                          btn3.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse("package:" + requireContext().getPackageName()))));
+                      }
+                      if (btn4 != null) {
+                          btn4.setOnClickListener(v -> {
+                              Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                              intent.setData(Uri.parse("package:" + requireContext().getPackageName()));
+                              startActivity(intent);
+                          });
+                      }
+
+                      if (btnStart != null) {
+                          btnStart.setOnClickListener(v -> {
+                              dismiss();
+                              AutoWatchService.startEngine(requireContext(), targetUserId);
+                          });
+                      }
+
+                      pollRunnable = new Runnable() {
+                          @Override
+                          public void run() {
+                              checkAllGranted();
+                              pollHandler.postDelayed(this, 800);
+                          }
+                      };
+                      pollHandler.post(pollRunnable);
+                  } catch (Throwable t) {
+                      t.printStackTrace();
+                  }
+              }
+
+              private void checkAllGranted() {
+                  if (getContext() == null) return;
+
+                  try {
+                      boolean settingEnabled = MainActivity.isAccessibilityServiceEnabled(requireContext(), AutoWatchService.class);
+                      boolean serviceAlive = AutoWatchService.isServiceAlive();
+                      boolean a11y = settingEnabled && serviceAlive;
+
+                      if (tvDesc1 != null) {
+                          if (settingEnabled && !serviceAlive) {
+                              tvDesc1.setText("⚠️ Stuck. Turn OFF & ON again in Settings.");
+                              tvDesc1.setTextColor(Color.parseColor("#DC2626"));
+                          } else {
+                              tvDesc1.setText("Monitors YouTube playback status.");
+                              tvDesc1.setTextColor(Color.parseColor("#6B7280"));
+                          }
+                      }
+
+                      boolean overlay = Settings.canDrawOverlays(requireContext());
+                      boolean write = Settings.System.canWrite(requireContext());
+                      PowerManager pm = (PowerManager) requireContext().getSystemService(Context.POWER_SERVICE);
+                      boolean battery = pm != null && pm.isIgnoringBatteryOptimizations(requireContext().getPackageName());
+
+                      updateButton(btn1, a11y);
+                      updateButton(btn2, overlay);
+                      updateButton(btn3, write);
+                      updateButton(btn4, battery);
+
+                      if (btnStart != null) {
+                          if (a11y && overlay && write && battery) {
+                              btnStart.setEnabled(true);
+                              btnStart.setBackgroundResource(R.drawable.bg_start_enabled);
+                              btnStart.setTextColor(Color.WHITE);
+                          } else {
+                              btnStart.setEnabled(false);
+                              btnStart.setBackgroundResource(R.drawable.bg_start_disabled);
+                              btnStart.setTextColor(Color.parseColor("#8A8A8A"));
+                          }
+                      }
+                  } catch (Throwable ignored) {}
+              }
+
+              private void updateButton(TextView tv, boolean ok) {
+                  if (tv == null) return;
+                  if (ok) {
+                      tv.setText("Granted ✓");
+                      tv.setBackgroundResource(R.drawable.bg_granted_green);
+                      tv.setTextColor(Color.parseColor("#15803D"));
+                  } else {
+                      tv.setText("Grant");
+                      tv.setBackgroundResource(R.drawable.bg_grant_purple);
+                      tv.setTextColor(Color.WHITE);
+                  }
+              }
+
+              @Override
+              public void onDestroyView() {
+                  super.onDestroyView();
+                  pollHandler.removeCallbacks(pollRunnable);
+              }
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/fomo/earn/MainActivity.java
+          package com.fomo.earn;
+
+          import android.annotation.SuppressLint;
+          import android.content.ComponentName;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.net.Uri;
+          import android.os.Bundle;
+          import android.os.PowerManager;
+          import android.provider.Settings;
+          import android.text.TextUtils;
+          import android.webkit.CookieManager;
+          import android.webkit.JavascriptInterface;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+          import androidx.appcompat.app.AppCompatActivity;
+
+          public class MainActivity extends AppCompatActivity {
+
+              public static final String APP_URL = "https://watchbux.com/index.php?tab=home";
+              private WebView webView;
+              public static MainActivity instance;
+
+              @SuppressLint("SetJavaScriptEnabled")
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  instance = this;
+                  setContentView(R.layout.activity_main);
+
+                  webView = findViewById(R.id.mainWebView);
+                  WebSettings s = webView.getSettings();
+                  s.setJavaScriptEnabled(true);
+                  s.setDomStorageEnabled(true);
+                  s.setDatabaseEnabled(true);
+                  s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+
+                  CookieManager.getInstance().setAcceptCookie(true);
+                  CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
+
+                  webView.addJavascriptInterface(new AndroidBridge(this), "AndroidBridge");
+                  webView.setWebViewClient(new WebViewClient());
+                  webView.loadUrl(APP_URL);
+              }
+
+              @Override
+              protected void onResume() {
+                  super.onResume();
+                  syncWatchStateToWeb(AutoWatchService.isRunning, AutoWatchService.currentRemainingSeconds);
+              }
+
+              public void syncWatchStateToWeb(boolean isRunning, int secondsRemaining) {
+                  if (webView == null) return;
+                  String js = "if (typeof updateWatchState === 'function') { updateWatchState(" + isRunning + ", " + secondsRemaining + "); }";
+                  webView.post(() -> webView.evaluateJavascript(js, null));
+              }
+
+              public static boolean isAccessibilityServiceEnabled(Context context, Class<?> service) {
+                  ComponentName expectedComponentName = new ComponentName(context, service);
+                  String enabledServicesSetting = Settings.Secure.getString(
+                          context.getContentResolver(),
+                          Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+                  );
+                  if (enabledServicesSetting == null) return false;
+                  TextUtils.SimpleStringSplitter colonSplitter = new TextUtils.SimpleStringSplitter(':');
+                  colonSplitter.setString(enabledServicesSetting);
+                  while (colonSplitter.hasNext()) {
+                      String componentNameString = colonSplitter.next();
+                      ComponentName enabledService = ComponentName.unflattenFromString(componentNameString);
+                      if (enabledService != null && enabledService.equals(expectedComponentName)) {
+                          return true;
+                      }
+                  }
+                  return false;
+              }
+
+              public boolean areAllPermissionsGranted() {
+                  boolean p1 = isAccessibilityServiceEnabled(this, AutoWatchService.class) && AutoWatchService.isServiceAlive();
+                  boolean p2 = Settings.canDrawOverlays(this);
+                  boolean p3 = Settings.System.canWrite(this);
+                  PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+                  boolean p4 = pm != null && pm.isIgnoringBatteryOptimizations(getPackageName());
+                  return p1 && p2 && p3 && p4;
+              }
+
+              public class AndroidBridge {
+                  private final Context context;
+
+                  public AndroidBridge(Context context) {
+                      this.context = context;
+                  }
+
+                  @JavascriptInterface
+                  public void launchAutoWatch(int userId) {
+                      runOnUiThread(() -> {
+                          try {
+                              if (!areAllPermissionsGranted()) {
+                                  PermissionBottomSheet sheet = PermissionBottomSheet.newInstance(userId);
+                                  sheet.show(getSupportFragmentManager(), "perm_sheet");
+                                  return;
+                              }
+
+                              AutoWatchService.startEngine(context, userId);
+                          } catch (Throwable t) {
+                              t.printStackTrace();
+                          }
+                      });
+                  }
+
+                  @JavascriptInterface
+                  public void stopAutoWatch() {
+                      runOnUiThread(() -> {
+                          AutoWatchService.stopEngine();
+                          syncWatchStateToWeb(false, 0);
+                      });
+                  }
+              }
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/fomo/earn/AutoWatchService.java
+          package com.fomo.earn;
+
+          import android.accessibilityservice.AccessibilityService;
+          import android.annotation.SuppressLint;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.graphics.PixelFormat;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.provider.Settings;
+          import android.view.Gravity;
+          import android.view.LayoutInflater;
+          import android.view.View;
+          import android.view.WindowManager;
+          import android.view.accessibility.AccessibilityEvent;
+          import android.view.accessibility.AccessibilityNodeInfo;
+          import android.webkit.CookieManager;
+          import android.widget.TextView;
+          import android.widget.Toast;
+
+          import org.json.JSONObject;
+
+          import java.io.IOException;
+          import java.util.concurrent.TimeUnit;
+
+          import okhttp3.Call;
+          import okhttp3.Callback;
+          import okhttp3.FormBody;
+          import okhttp3.OkHttpClient;
+          import okhttp3.Request;
+          import okhttp3.Response;
+
+          public class AutoWatchService extends AccessibilityService {
+
+              private static final String YOUTUBE_PKG = "com.google.android.youtube";
+              public static boolean isRunning = false;
+              public static int currentUserId = 1;
+              public static String currentVideoId = "";
+
+              public static int targetDuration = 15;
+              public static int currentElapsed = 0;
+              public static int currentRemainingSeconds = 15;
+
+              private boolean isPaused = false;
+              private boolean isAdDetected = false;
+              public static final String BASE_URL = "https://watchbux.com";
+
+              private static long videoLaunchTime = 0;
+
+              private WindowManager windowManager;
+              private View overlayView;
+              private TextView tvPillSeconds;
+
+              private Handler tickerHandler = new Handler(Looper.getMainLooper());
+              private Runnable tickerRunnable;
+              public static AutoWatchService instance;
+
+              public static boolean isServiceAlive() {
+                  return instance != null;
+              }
+
+              public static void startEngine(Context context, int uId) {
+                  currentUserId = uId;
+                  fetchNextAndPlay(context);
+              }
+
+              public static void stopEngine() {
+                  isRunning = false;
+                  currentVideoId = "";
+                  if (instance != null) {
+                      instance.stopWatcher();
+                  }
+              }
+
+              private static void fetchNextAndPlay(Context context) {
+                  try {
+                      String cookie = CookieManager.getInstance().getCookie(BASE_URL);
+
+                      Request.Builder reqBuilder = new Request.Builder()
+                              .url(BASE_URL + "/index.php?api=get_video&user_id=" + currentUserId)
+                              .header("User-Agent", "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36")
+                              .header("Accept", "application/json");
+
+                      if (cookie != null && !cookie.isEmpty()) {
+                          reqBuilder.header("Cookie", cookie);
+                      }
+
+                      OkHttpClient client = new OkHttpClient.Builder()
+                              .connectTimeout(8, TimeUnit.SECONDS)
+                              .readTimeout(8, TimeUnit.SECONDS)
+                              .build();
+
+                      client.newCall(reqBuilder.build()).enqueue(new Callback() {
+                          @Override
+                          public void onFailure(Call call, IOException e) {
+                              new Handler(Looper.getMainLooper()).post(() -> {
+                                  Toast.makeText(context, "Network issue. Please retry.", Toast.LENGTH_SHORT).show();
+                              });
+                              stopEngine();
+                          }
+
+                          @Override
+                          public void onResponse(Call call, Response response) {
+                              try {
+                                  String body = response.body() != null ? response.body().string() : "";
+                                  JSONObject json = new JSONObject(body);
+
+                                  if ("success".equals(json.optString("status"))) {
+                                      String vid = json.getString("video_id");
+                                      targetDuration = json.optInt("duration", 15);
+                                      if (targetDuration <= 0) targetDuration = 15;
+
+                                      isRunning = true;
+                                      playVideo(context, vid);
+
+                                      if (MainActivity.instance != null) {
+                                          MainActivity.instance.syncWatchStateToWeb(true, targetDuration);
+                                      }
+                                  } else {
+                                      String limitMsg = json.optString("message", "No task available right now");
+                                      new Handler(Looper.getMainLooper()).post(() -> {
+                                          Toast.makeText(context, limitMsg, Toast.LENGTH_LONG).show();
+                                      });
+                                      stopEngine();
+                                  }
+                              } catch (Exception e) {
+                                  new Handler(Looper.getMainLooper()).post(() -> {
+                                      Toast.makeText(context, "No task available right now", Toast.LENGTH_SHORT).show();
+                                  });
+                                  stopEngine();
+                              }
+                          }
+                      });
+                  } catch (Throwable t) {
+                      stopEngine();
+                  }
+              }
+
+              private static void playVideo(Context context, String vid) {
+                  try {
+                      currentVideoId = vid;
+                      currentElapsed = 0;
+                      currentRemainingSeconds = targetDuration;
+                      videoLaunchTime = System.currentTimeMillis();
+
+                      new Handler(Looper.getMainLooper()).post(() -> {
+                          try {
+                              Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse("vnd.youtube:" + vid));
+                              intent.setPackage(YOUTUBE_PKG);
+                              intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+                              context.startActivity(intent);
+                          } catch (Exception e) {
+                              try {
+                                  Intent web = new Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/watch?v=" + vid));
+                                  web.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                  context.startActivity(web);
+                              } catch (Exception ignored) {}
+                          }
+
+                          if (instance != null) {
+                              instance.showBlueOverlay();
+                          }
+                      });
+                  } catch (Throwable ignored) {}
+              }
+
+              @Override
+              public void onServiceConnected() {
+                  super.onServiceConnected();
+                  instance = this;
+                  try {
+                      windowManager = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
+                  } catch (Exception ignored) {}
+              }
+
+              private boolean isYouTubeActive() {
+                  if (System.currentTimeMillis() - videoLaunchTime < 3000) {
+                      return true;
+                  }
+                  try {
+                      AccessibilityNodeInfo root = getRootInActiveWindow();
+                      if (root != null && root.getPackageName() != null) {
+                          return YOUTUBE_PKG.equals(root.getPackageName().toString());
+                      }
+                  } catch (Throwable ignored) {}
+                  return false;
+              }
+
+              @Override
+              public void onAccessibilityEvent(AccessibilityEvent event) {
+                  try {
+                      if (!isRunning || currentVideoId.isEmpty() || event == null) return;
+
+                      String pkg = event.getPackageName() != null ? event.getPackageName().toString() : "";
+                      if (YOUTUBE_PKG.equals(pkg)) {
+                          AccessibilityNodeInfo root = getRootInActiveWindow();
+                          isAdDetected = checkIsAdActive(root);
+                          isPaused = checkIsVideoPaused(root);
+
+                          if (overlayView != null && overlayView.getVisibility() != View.VISIBLE) {
+                              overlayView.setVisibility(View.VISIBLE);
+                          }
+                      } else {
+                          if (System.currentTimeMillis() - videoLaunchTime >= 3000) {
+                              isPaused = true;
+                              if (overlayView != null) overlayView.setVisibility(View.GONE);
+                          }
+                      }
+                  } catch (Throwable ignored) {}
+              }
+
+              private boolean checkIsAdActive(AccessibilityNodeInfo node) {
+                  if (node == null) return false;
+                  try {
+                      CharSequence text = node.getText();
+                      CharSequence desc = node.getContentDescription();
+                      if (text != null) {
+                          String s = text.toString().toLowerCase().trim();
+                          if (s.contains("skip ad") || s.contains("skip ads") || s.startsWith("ad 1 of") || s.startsWith("ad 2 of") || s.contains("ad ·")) {
+                              return true;
+                          }
+                      }
+                      if (desc != null) {
+                          String s = desc.toString().toLowerCase().trim();
+                          if (s.contains("skip ad") || s.contains("skip ads") || s.startsWith("ad 1 of") || s.startsWith("ad 2 of")) {
+                              return true;
+                          }
+                      }
+                      for (int i = 0; i < node.getChildCount(); i++) {
+                          if (checkIsAdActive(node.getChild(i))) return true;
+                      }
+                  } catch (Throwable ignored) {}
+                  return false;
+              }
+
+              private boolean checkIsVideoPaused(AccessibilityNodeInfo node) {
+                  if (node == null) return false;
+                  try {
+                      CharSequence desc = node.getContentDescription();
+                      if (desc != null && desc.toString().equalsIgnoreCase("play video")) {
+                          return true;
+                      }
+                      for (int i = 0; i < node.getChildCount(); i++) {
+                          if (checkIsVideoPaused(node.getChild(i))) return true;
+                      }
+                  } catch (Throwable ignored) {}
+                  return false;
+              }
+
+              @SuppressLint("InflateParams")
+              public void showBlueOverlay() {
+                  if (!Settings.canDrawOverlays(this)) return;
+
+                  new Handler(Looper.getMainLooper()).post(() -> {
+                      try {
+                          if (overlayView == null) {
+                              int layoutType = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                                      ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                                      : WindowManager.LayoutParams.TYPE_PHONE;
+
+                              WindowManager.LayoutParams params = new WindowManager.LayoutParams(
+                                      WindowManager.LayoutParams.WRAP_CONTENT,
+                                      WindowManager.LayoutParams.WRAP_CONTENT,
+                                      layoutType,
+                                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                                      PixelFormat.TRANSLUCENT
+                              );
+                              params.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
+                              params.y = 65;
+
+                              overlayView = LayoutInflater.from(this).inflate(R.layout.floating_timer_overlay, null);
+                              tvPillSeconds = overlayView.findViewById(R.id.tv_floating_seconds);
+                              windowManager.addView(overlayView, params);
+                          }
+
+                          overlayView.setVisibility(View.VISIBLE);
+                          isPaused = false;
+                          isAdDetected = false;
+                          startSmoothTicker();
+                      } catch (Throwable ignored) {}
+                  });
+              }
+
+              private void startSmoothTicker() {
+                  if (tickerRunnable != null) tickerHandler.removeCallbacks(tickerRunnable);
+
+                  tickerRunnable = new Runnable() {
+                      @Override
+                      public void run() {
+                          try {
+                              if (!isRunning) return;
+
+                              if (!isYouTubeActive()) {
+                                  if (overlayView != null) overlayView.setVisibility(View.GONE);
+                                  isPaused = true;
+                                  tickerHandler.postDelayed(this, 1000);
+                                  return;
+                              } else {
+                                  if (overlayView != null && overlayView.getVisibility() != View.VISIBLE) {
+                                      overlayView.setVisibility(View.VISIBLE);
+                                  }
+                              }
+
+                              if (isAdDetected) {
+                                  if (tvPillSeconds != null) tvPillSeconds.setText("Ad...");
+                              } else if (isPaused) {
+                                  if (tvPillSeconds != null) tvPillSeconds.setText(currentElapsed + " / " + targetDuration);
+                              } else {
+                                  currentElapsed++;
+                                  currentRemainingSeconds = Math.max(0, targetDuration - currentElapsed);
+
+                                  if (tvPillSeconds != null) {
+                                      tvPillSeconds.setText(currentElapsed + " / " + targetDuration);
+                                  }
+
+                                  if (MainActivity.instance != null) {
+                                      MainActivity.instance.syncWatchStateToWeb(true, currentRemainingSeconds);
+                                  }
+
+                                  if (currentElapsed >= targetDuration) {
+                                      claimAndLoadNextVideo();
+                                      return;
+                                  }
+                              }
+                          } catch (Throwable ignored) {}
+
+                          tickerHandler.postDelayed(this, 1000);
+                      }
+                  };
+                  tickerHandler.postDelayed(tickerRunnable, 1000);
+              }
+
+              private void claimAndLoadNextVideo() {
+                  if (tickerRunnable != null) tickerHandler.removeCallbacks(tickerRunnable);
+
+                  try {
+                      String cookie = CookieManager.getInstance().getCookie(BASE_URL);
+
+                      FormBody form = new FormBody.Builder()
+                              .add("user_id", String.valueOf(currentUserId))
+                              .add("video_id", currentVideoId)
+                              .build();
+
+                      Request.Builder reqBuilder = new Request.Builder()
+                              .url(BASE_URL + "/index.php?api=claim_reward&user_id=" + currentUserId + "&video_id=" + currentVideoId)
+                              .header("User-Agent", "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36")
+                              .post(form);
+
+                      if (cookie != null && !cookie.isEmpty()) {
+                          reqBuilder.header("Cookie", cookie);
+                      }
+
+                      new OkHttpClient().newCall(reqBuilder.build()).enqueue(new Callback() {
+                          @Override
+                          public void onFailure(Call call, IOException e) {
+                              if (isRunning) {
+                                  new Handler(Looper.getMainLooper()).postDelayed(() -> fetchNextAndPlay(getApplicationContext()), 1000);
+                              }
+                          }
+
+                          @Override
+                          public void onResponse(Call call, Response response) {
+                              try {
+                                  String body = response.body() != null ? response.body().string() : "";
+                                  JSONObject json = new JSONObject(body);
+
+                                  if (json.optBoolean("success") || "success".equals(json.optString("status"))) {
+                                      new Handler(Looper.getMainLooper()).post(() -> {
+                                          Toast.makeText(getApplicationContext(), "🎉 Task completed! Reward added: $0.0004", Toast.LENGTH_SHORT).show();
+                                      });
+                                      if (tvPillSeconds != null) {
+                                          tvPillSeconds.setText("🎉 +$0.0004 Added!");
+                                      }
+                                  }
+                              } catch (Exception ignored) {}
+
+                              if (isRunning) {
+                                  new Handler(Looper.getMainLooper()).postDelayed(() -> fetchNextAndPlay(getApplicationContext()), 1200);
+                              }
+                          }
+                      });
+                  } catch (Throwable t) {
+                      if (isRunning) {
+                          new Handler(Looper.getMainLooper()).postDelayed(() -> fetchNextAndPlay(getApplicationContext()), 1200);
+                      }
+                  }
+              }
+
+              public void stopWatcher() {
+                  try {
+                      if (tickerRunnable != null) tickerHandler.removeCallbacks(tickerRunnable);
+
+                      String cookie = CookieManager.getInstance().getCookie(BASE_URL);
+                      FormBody form = new FormBody.Builder().add("user_id", String.valueOf(currentUserId)).build();
+                      Request.Builder reqBuilder = new Request.Builder()
+                              .url(BASE_URL + "/index.php?api=stop_watching&user_id=" + currentUserId)
+                              .header("User-Agent", "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36")
+                              .post(form);
+
+                      if (cookie != null && !cookie.isEmpty()) {
+                          reqBuilder.header("Cookie", cookie);
+                      }
+
+                      new OkHttpClient().newCall(reqBuilder.build()).enqueue(new Callback() {
+                          @Override
+                          public void onFailure(Call call, IOException e) {}
+                          @Override
+                          public void onResponse(Call call, Response response) {}
+                      });
+
+                      if (MainActivity.instance != null) {
+                          MainActivity.instance.syncWatchStateToWeb(false, 0);
+                      }
+
+                      new Handler(Looper.getMainLooper()).post(() -> {
+                          try {
+                              if (overlayView != null && windowManager != null) {
+                                  windowManager.removeView(overlayView);
+                                  overlayView = null;
+                              }
+                          } catch (Exception ignored) {}
+                      });
+                  } catch (Throwable ignored) {}
+              }
+
+              @Override
+              public void onInterrupt() {}
+
+              @Override
+              public void onDestroy() {
+                  super.onDestroy();
+                  stopWatcher();
+                  instance = null;
+              }
+          }
+          EOF
+
+      - name: Build APK via Gradle
+        run: |
+          gradle wrapper --gradle-version 8.4
+          chmod +x ./gradlew
+          ./gradlew assembleDebug --stacktrace
+
+      - name: Rename Output
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk Watchbux.apk
+
+      - name: Upload Watchbux APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Watchbux-apk
+          path: Watchbux.apk
+          
+          
+          yhe mara APK ha ok
+          
+          
+          yhe sql
+          
+          
+          -- =========================================================================
+-- WATCHBUX / VIEWBOOST - HIGH-SECURITY MASTER DATABASE SCHEMA
+-- Compatible with Hostinger MySQL 8.x / MariaDB
+-- =========================================================================
+
+-- 1. USERS TABLE (Core Identity, Balances & Fraud Prevention)
+CREATE TABLE IF NOT EXISTS `users` (
+    `id` INT AUTO_INCREMENT PRIMARY KEY,
+    `username` VARCHAR(50) DEFAULT NULL,
+    `email` VARCHAR(191) NOT NULL UNIQUE,
+    `password` VARCHAR(255) NOT NULL,
+    `phone_number` VARCHAR(30) DEFAULT NULL,
+    `main_balance` DECIMAL(14,7) DEFAULT 0.0020000,
+    `campaign_balance` DECIMAL(12,4) DEFAULT 0.0000,
+    `today_views` INT DEFAULT 0,
+    `total_views` INT DEFAULT 0,
+    `today_earning` DECIMAL(14,7) DEFAULT 0.0000000,
+    `total_earning` DECIMAL(14,7) DEFAULT 0.0000000,
+    `hourly_views` INT DEFAULT 0,
+    `watching_status` ENUM('stopped', 'running') DEFAULT 'stopped',
+    `current_video_id` VARCHAR(50) DEFAULT NULL,
+    `remaining_seconds` INT DEFAULT 0,
+    `last_reset_date` DATE DEFAULT (CURRENT_DATE),
+    `last_hour_time` DATETIME DEFAULT CURRENT_TIMESTAMP,
+    `referral_code` VARCHAR(30) NOT NULL UNIQUE,
+    `referred_by` VARCHAR(30) DEFAULT NULL,
+    `device_uuid` VARCHAR(100) DEFAULT NULL,
+    `device_token` VARCHAR(255) DEFAULT NULL,
+    `registration_ip` VARCHAR(45) NOT NULL,
+    `last_login_ip` VARCHAR(45) DEFAULT NULL,
+    `is_admin` TINYINT(1) DEFAULT 0,
+    `status` ENUM('active', 'suspended', 'banned', 'pending_verification') DEFAULT 'active',
+    `ban_reason` VARCHAR(255) DEFAULT NULL,
+    `trust_score` INT DEFAULT 100,
+    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX `idx_referred_by` (`referred_by`),
+    INDEX `idx_device_uuid` (`device_uuid`),
+    INDEX `idx_status` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 2. DEVICES TABLE (Strict Multi-Account Detection on Single Mobile)
+CREATE TABLE IF NOT EXISTS `user_devices` (
+    `id` INT AUTO_INCREMENT PRIMARY KEY,
+    `device_uuid` VARCHAR(100) NOT NULL,
+    `user_id` INT NOT NULL,
+    `device_model` VARCHAR(100) DEFAULT NULL,
+    `os_version` VARCHAR(50) DEFAULT NULL,
+    `first_seen_ip` VARCHAR(45) DEFAULT NULL,
+    `accounts_count` INT DEFAULT 1,
+    `is_blocked` TINYINT(1) DEFAULT 0,
+    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY `uq_device_user` (`device_uuid`, `user_id`),
+    INDEX `idx_device` (`device_uuid`),
+    CONSTRAINT `fk_device_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 3. AUDIT & SECURITY LOGS TABLE (Tracks IPs, Logins, Suspicious Behavior)
+CREATE TABLE IF NOT EXISTS `security_logs` (
+    `id` INT AUTO_INCREMENT PRIMARY KEY,
+    `user_id` INT DEFAULT NULL,
+    `event_type` VARCHAR(50) NOT NULL, -- 'login_failed', 'multi_account_attempt', 'ip_change', 'rapid_watch'
+    `ip_address` VARCHAR(45) NOT NULL,
+    `user_agent` VARCHAR(255) DEFAULT NULL,
+    `details` TEXT DEFAULT NULL,
+    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX `idx_user_event` (`user_id`, `event_type`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 4. VIDEOS / CAMPAIGNS TABLE (Promoter Tasks & View Quotas)
+CREATE TABLE IF NOT EXISTS `videos` (
+    `id` INT AUTO_INCREMENT PRIMARY KEY,
+    `user_id` INT DEFAULT 0, -- 0 for Admin Seed, or User ID of Promoter
+    `video_id` VARCHAR(50) NOT NULL,
+    `title` VARCHAR(255) DEFAULT 'Official Video Task',
+    `duration` INT DEFAULT 15, -- 15s, 30s, 60s
+    `target_views` INT DEFAULT 1000,
+    `completed_views` INT DEFAULT 0,
+    `cost` DECIMAL(10,4) DEFAULT 0.0000,
+    `is_active` TINYINT(1) DEFAULT 1,
+    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX `idx_active_views` (`is_active`, `completed_views`, `target_views`),
+    INDEX `idx_promoter` (`user_id`),
+    INDEX `idx_video_id` (`video_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 5. VIEWS HISTORY (Guarantees 1 User sees 1 Video Only ONCE in Lifetime)
+CREATE TABLE IF NOT EXISTS `views_history` (
+    `id` INT AUTO_INCREMENT PRIMARY KEY,
+    `user_id` INT NOT NULL,
+    `video_id` VARCHAR(50) NOT NULL,
+    `earned` DECIMAL(14,7) DEFAULT 0.0004000,
+    `device_uuid` VARCHAR(100) DEFAULT NULL,
+    `ip_address` VARCHAR(45) DEFAULT NULL,
+    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY `uq_user_video_lifetime` (`user_id`, `video_id`), -- Hard Database Block against duplicate watch!
+    INDEX `idx_user_history` (`user_id`),
+    INDEX `idx_video_history` (`video_id`),
+    CONSTRAINT `fk_views_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 6. TRANSACTIONS LEDGER (Unified Financial Record: Deposit, Withdraw, Earn, Referral, Spend)
+CREATE TABLE IF NOT EXISTS `transactions` (
+    `id` INT AUTO_INCREMENT PRIMARY KEY,
+    `user_id` INT NOT NULL,
+    `type` ENUM('deposit', 'withdraw', 'earn', 'referral', 'campaign') NOT NULL,
+    `amount` DECIMAL(14,7) NOT NULL, -- Positive for Credit (+), Negative for Spend (-)
+    `currency` VARCHAR(10) DEFAULT 'USD',
+    `method` VARCHAR(50) DEFAULT 'USDT BEP-20', -- 'USDT BEP-20', 'EasyPaisa', 'JazzCash'
+    `wallet_address` TEXT NOT NULL, -- User's account number or destination
+    `tx_hash` VARCHAR(255) DEFAULT NULL, -- TID or Blockchain Hash
+    `status` ENUM('Pending', 'Processing', 'Paid', 'Approved', 'Rejected') DEFAULT 'Pending',
+    `admin_note` VARCHAR(255) DEFAULT NULL,
+    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX `idx_user_type` (`user_id`, `type`),
+    INDEX `idx_status` (`status`),
+    CONSTRAINT `fk_tx_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 7. SETTINGS TABLE (Dynamic Price, Rate & Security Configurations)
+CREATE TABLE IF NOT EXISTS `settings` (
+    `id` INT PRIMARY KEY,
+    `reward_15s` DECIMAL(14,7) DEFAULT 0.0004000,
+    `reward_30s` DECIMAL(14,7) DEFAULT 0.0006000,
+    `reward_60s` DECIMAL(14,7) DEFAULT 0.0008000,
+    `cost_15s` DECIMAL(14,7) DEFAULT 0.0008000,
+    `cost_30s` DECIMAL(14,7) DEFAULT 0.0012000,
+    `cost_60s` DECIMAL(14,7) DEFAULT 0.0016000,
+    `usd_to_pkr` DECIMAL(10,2) DEFAULT 290.00,
+    `admin_bep20` VARCHAR(255) DEFAULT '0x71C836e522AfFeE994689D8B6c891F46Fa42e12B',
+    `easypaisa_no` VARCHAR(50) DEFAULT '03001234567',
+    `easypaisa_name` VARCHAR(100) DEFAULT 'Watchbux Official',
+    `jazzcash_no` VARCHAR(50) DEFAULT '03007654321',
+    `jazzcash_name` VARCHAR(100) DEFAULT 'Watchbux Official',
+    `apk_download_url` VARCHAR(255) DEFAULT 'Watchbux.apk',
+    `apk_version` VARCHAR(20) DEFAULT '1.1.0',
+    `max_accounts_per_device` INT DEFAULT 1, -- Strict Anti-Cheat Rule
+    `allow_vpn` TINYINT(1) DEFAULT 0,
+    `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Insert initial Admin Settings row
+INSERT IGNORE INTO `settings` (`id`) VALUES (1);
+
+-- Seed Initial Verified YouTube Videos for rotation
+INSERT IGNORE INTO `videos` (`user_id`, `video_id`, `title`, `duration`, `target_views`, `completed_views`, `is_active`) VALUES
+(0, 'kJQP7kiw5Fk', 'Official Watchbux Task 1', 15, 100000, 0, 1),
+(0, 'fJ9rUzIMcZQ', 'Official Watchbux Task 2', 30, 100000, 0, 1),
+(0, '9bZkp7q19f0', 'Official Watchbux Task 3', 15, 100000, 0, 1),
+(0, '3JZ_D3ELwOQ', 'Official Watchbux Task 4', 60, 100000, 0, 1),
+(0, 'OPf0YbXqDm0', 'Official Watchbux Task 5', 15, 100000, 0, 1);
+
+
+yhe mara index PHP 
+
+<?php
+/**
+ * VIEWBOOST - Production Master Engine
+ * Web Gateway (Download APK Only), Strict 1-User 1-View Forever,
+ * Full Dedicated History Ledger, USDT-Only Locked Withdrawals,
+ * Clean Promoter (10 Min Views, Tiered Rates, Status Badges).
+ */
+
+ob_start();
+session_start();
+
+ini_set('display_errors', 0);
+error_reporting(E_ALL);
+
+// =========================================================================
+// 1. DATABASE CONNECTION & CONFIGURATION
+// =========================================================================
+$db_host = 'sql302.infinityfree.com';
+$db_name = 'if0_42895122_zaicash';
+$db_user = 'if0_42895122';
+$db_pass = 'EVugU5Vb14h';
+
+$DAILY_LIMIT  = 900;
+$HOURLY_LIMIT = 80;
+$MIN_WITHDRAW = 0.01;
+
+try {
+    $db = new PDO("mysql:host={$db_host};dbname={$db_name};charset=utf8mb4", $db_user, $db_pass, [
+        PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        PDO::ATTR_EMULATE_PREPARES   => false
+    ]);
+} catch (Throwable $e) {
+    die("<div style='background:#f3f4f9;color:#ef4444;padding:40px;font-family:sans-serif;text-align:center;'>
+        <h2>Database Connection Error</h2>
+        <p>" . htmlspecialchars($e->getMessage()) . "</p>
+    </div>");
+}
+
+// Auto-repair settings table
+$db->exec("CREATE TABLE IF NOT EXISTS settings (
+    id INT PRIMARY KEY,
+    reward_15s DECIMAL(14,7) DEFAULT 0.0004000,
+    reward_30s DECIMAL(14,7) DEFAULT 0.0006000,
+    reward_60s DECIMAL(14,7) DEFAULT 0.0008000,
+    cost_15s DECIMAL(14,7) DEFAULT 0.0008000,
+    cost_30s DECIMAL(14,7) DEFAULT 0.0012000,
+    cost_60s DECIMAL(14,7) DEFAULT 0.0016000,
+    usd_to_pkr DECIMAL(10,2) DEFAULT 290.00,
+    admin_bep20 VARCHAR(255) DEFAULT '0x71C836e522AfFeE994689D8B6c891F46Fa42e12B',
+    easypaisa_no VARCHAR(50) DEFAULT '03001234567',
+    easypaisa_name VARCHAR(100) DEFAULT 'ViewBoost Official',
+    jazzcash_no VARCHAR(50) DEFAULT '03007654321',
+    jazzcash_name VARCHAR(100) DEFAULT 'ViewBoost Official',
+    apk_download_url VARCHAR(255) DEFAULT 'ViewBoost.apk'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
+$db->exec("INSERT IGNORE INTO settings (id) VALUES (1)");
+
+$settings = $db->query("SELECT * FROM settings WHERE id = 1")->fetch();
+$USD_TO_PKR_RATE = floatval($settings['usd_to_pkr'] ?? 290.00);
+
+// =========================================================================
+// 2. IN-APP VS WEB DETECTION (WEB IS STRICTLY DOWNLOAD PAGE ONLY)
+// =========================================================================
+$isApp = false;
+$ua = $_SERVER['HTTP_USER_AGENT'] ?? '';
+if (isset($_GET['app']) || isset($_COOKIE['vb_is_app']) || strpos($ua, '; wv') !== false || strpos($ua, 'Version/4.0') !== false) {
+    $isApp = true;
+    $_SESSION['is_app'] = true;
+    setcookie('vb_is_app', '1', time() + (86400 * 365), "/");
+} elseif (!empty($_SESSION['is_app'])) {
+    $isApp = true;
+}
+
+// Token Auto-Login for App
+if (!isset($_SESSION['user_id']) && !empty($_COOKIE['zc_device_token'])) {
+    $tok = $_COOKIE['zc_device_token'];
+    $dStmt = $db->prepare("SELECT id FROM users WHERE device_token = ? LIMIT 1");
+    $dStmt->execute([$tok]);
+    $uFound = $dStmt->fetch();
+    if ($uFound) {
+        $_SESSION['user_id'] = $uFound['id'];
+    }
+}
+
+// Current User State
+$currentUser = null;
+if (!empty($_SESSION['user_id'])) {
+    $uStmt = $db->prepare("SELECT * FROM users WHERE id = ?");
+    $uStmt->execute([$_SESSION['user_id']]);
+    $currentUser = $uStmt->fetch();
+
+    if ($currentUser) {
+        $today = date('Y-m-d');
+        if ($currentUser['last_reset_date'] != $today) {
+            $db->exec("UPDATE users SET today_views = 0, today_earning = 0, hourly_views = 0, last_reset_date = '{$today}' WHERE id = " . $currentUser['id']);
+            $currentUser['today_views'] = 0;
+            $currentUser['today_earning'] = 0;
+            $currentUser['hourly_views'] = 0;
+            $currentUser['last_reset_date'] = $today;
+        }
+        if ((time() - strtotime($currentUser['last_hour_time'])) > 3600) {
+            $db->exec("UPDATE users SET hourly_views = 0, last_hour_time = NOW() WHERE id = " . $currentUser['id']);
+            $currentUser['hourly_views'] = 0;
+        }
+    }
+}
+
+// Clean Logout Handler (100% Reliable Session & Cookie Wipe)
+if (isset($_GET['action']) && $_GET['action'] === 'logout') {
+    $_SESSION = [];
+    if (ini_get("session.use_cookies")) {
+        $params = session_get_cookie_params();
+        setcookie(session_name(), '', time() - 42000, $params["path"], $params["domain"], $params["secure"], $params["httponly"]);
+    }
+    session_destroy();
+    setcookie('zc_device_token', '', time() - 86400, "/");
+    setcookie('vb_is_app', '', time() - 86400, "/");
+    header("Location: index.php?tab=login");
+    exit;
+}
+
+// =========================================================================
+// 3. REST APIS (STRICT LIFETIME UNIQUE & ATOMIC REWARD CREDITING)
+// =========================================================================
+if (isset($_GET['api'])) {
+    header('Content-Type: application/json');
+
+    $apiUserId = intval($_REQUEST['user_id'] ?? ($currentUser['id'] ?? 0));
+    $apiUser = null;
+    if ($apiUserId > 0) {
+        $s = $db->prepare("SELECT * FROM users WHERE id = ?");
+        $s->execute([$apiUserId]);
+        $apiUser = $s->fetch();
+    }
+
+    // A. GET NEXT TASK (STRICT LIFETIME UNIQUE: NEVER REPEAT WATCHED VIDEOS)
+    if ($_GET['api'] === 'get_video') {
+        if (!$apiUser) {
+            echo json_encode(['status' => 'error', 'message' => 'Unauthorized device.']);
+            exit;
+        }
+        if ($apiUser['hourly_views'] >= $HOURLY_LIMIT) {
+            echo json_encode([
+                'status' => 'limit_reached',
+                'message' => 'Hourly limit complete, please come back next hour'
+            ]);
+            exit;
+        }
+        if ($apiUser['today_views'] >= $DAILY_LIMIT) {
+            echo json_encode([
+                'status' => 'limit_reached',
+                'message' => 'Daily limit complete, please come back later (Resets at 12:00 AM)'
+            ]);
+            exit;
+        }
+
+        // Fetch task: active, completed < target, AND NEVER watched by this user before!
+        $vStmt = $db->prepare("SELECT id, video_id, duration, target_views, completed_views FROM videos 
+                               WHERE is_active = 1 
+                               AND completed_views < target_views 
+                               AND video_id NOT IN (SELECT video_id FROM views_history WHERE user_id = ?) 
+                               ORDER BY user_id DESC, id DESC LIMIT 1");
+        $vStmt->execute([$apiUser['id']]);
+        $vidRow = $vStmt->fetch();
+
+        if ($vidRow) {
+            $nextVid = $vidRow['video_id'];
+            $duration = intval($vidRow['duration'] ?? 15);
+            if ($duration <= 0) $duration = 15;
+
+            $db->prepare("UPDATE users SET watching_status = 'running', current_video_id = ?, remaining_seconds = ? WHERE id = ?")
+               ->execute([$nextVid, $duration, $apiUser['id']]);
+
+            echo json_encode([
+                'status' => 'success',
+                'video_id' => $nextVid,
+                'id' => $nextVid,
+                'task_id' => (int)$vidRow['id'],
+                'duration' => $duration
+            ]);
+        } else {
+            echo json_encode([
+                'status' => 'limit_reached',
+                'message' => 'No task available right now'
+            ]);
+        }
+        exit;
+    }
+
+    // B. CLAIM REWARD (ATOMIC DB TRANSACTION)
+    if ($_GET['api'] === 'claim_reward') {
+        if (!$apiUser) {
+            echo json_encode(['success' => false, 'message' => 'User not found.']);
+            exit;
+        }
+
+        $vId = trim($_REQUEST['video_id'] ?? ($apiUser['current_video_id'] ?? ''));
+        if (empty($vId)) {
+            echo json_encode(['success' => false, 'message' => 'Video ID missing.']);
+            exit;
+        }
+
+        try {
+            $db->beginTransaction();
+
+            // Duplicate guard
+            $dup = $db->prepare("SELECT id FROM views_history WHERE user_id = ? AND video_id = ? LIMIT 1");
+            $dup->execute([$apiUser['id'], $vId]);
+            if ($dup->fetch()) {
+                $db->rollBack();
+                echo json_encode(['success' => false, 'message' => 'Task already completed.']);
+                exit;
+            }
+
+            // Duration & Dynamic Rate
+            $vInfoStmt = $db->prepare("SELECT id, duration, target_views, completed_views FROM videos WHERE video_id = ? LIMIT 1 FOR UPDATE");
+            $vInfoStmt->execute([$vId]);
+            $vInfo = $vInfoStmt->fetch();
+
+            $duration = intval($vInfo['duration'] ?? 15);
+            $reward = floatval($settings['reward_15s']);
+            if ($duration >= 60) $reward = floatval($settings['reward_60s']);
+            elseif ($duration >= 30) $reward = floatval($settings['reward_30s']);
+
+            // Update video completed quota
+            if ($vInfo) {
+                $newCompleted = $vInfo['completed_views'] + 1;
+                $isActive = ($newCompleted >= $vInfo['target_views']) ? 0 : 1;
+                $db->prepare("UPDATE videos SET completed_views = ?, is_active = ? WHERE id = ?")
+                   ->execute([$newCompleted, $isActive, $vInfo['id']]);
+            }
+
+            // Record in permanent views_history
+            $db->prepare("INSERT INTO views_history (user_id, video_id, earned) VALUES (?, ?, ?)")
+               ->execute([$apiUser['id'], $vId, $reward]);
+
+            // Update user balance & stats
+            $newBal = $apiUser['main_balance'] + $reward;
+            $newTodayEarn = $apiUser['today_earning'] + $reward;
+            $newTotalEarn = $apiUser['total_earning'] + $reward;
+            $newTodayViews = $apiUser['today_views'] + 1;
+            $newTotalViews = $apiUser['total_views'] + 1;
+            $newHourlyViews = $apiUser['hourly_views'] + 1;
+
+            $db->prepare("UPDATE users SET 
+                main_balance = ?, today_earning = ?, total_earning = ?, 
+                today_views = ?, total_views = ?, hourly_views = ?, remaining_seconds = 0 
+                WHERE id = ?")
+               ->execute([$newBal, $newTodayEarn, $newTotalEarn, $newTodayViews, $newTotalViews, $newHourlyViews, $apiUser['id']]);
+
+            // Record in Transactions Ledger
+            $db->prepare("INSERT INTO transactions (user_id, type, amount, method, wallet_address, status) 
+                          VALUES (?, 'earn', ?, 'ViewBoost Watch', ?, 'Paid')")
+               ->execute([$apiUser['id'], $reward, "Video ($duration s): " . $vId]);
+
+            // 3-Tier Royalty (50%, 10%, 1%)
+            if (!empty($apiUser['referred_by'])) {
+                $r1 = $db->prepare("SELECT id, referred_by FROM users WHERE referral_code = ?");
+                $r1->execute([$apiUser['referred_by']]);
+                $u1 = $r1->fetch();
+                if ($u1) {
+                    $ref1 = $reward * 0.50;
+                    $db->prepare("UPDATE users SET main_balance = main_balance + ?, today_earning = today_earning + ?, total_earning = total_earning + ? WHERE id = ?")
+                       ->execute([$ref1, $ref1, $ref1, $u1['id']]);
+                    $db->prepare("INSERT INTO transactions (user_id, type, amount, method, wallet_address, status) 
+                                  VALUES (?, 'referral', ?, 'Referral Royalty', ?, 'Paid')")
+                       ->execute([$u1['id'], $ref1, "Level 1 (50%) from User #" . $apiUser['id']]);
+                }
+            }
+
+            $db->commit();
+
+            echo json_encode([
+                'success' => true,
+                'status' => 'success',
+                'reward' => $reward,
+                'main_balance' => number_format($newBal, 7),
+                'today_earning' => number_format($newTodayEarn, 2),
+                'total_earning' => number_format($newTotalEarn, 2),
+                'today_views' => $newTodayViews,
+                'total_views' => $newTotalViews
+            ]);
+            exit;
+
+        } catch (Throwable $e) {
+            if ($db->inTransaction()) $db->rollBack();
+            echo json_encode(['success' => false, 'message' => 'Reward failed: ' . $e->getMessage()]);
+            exit;
+        }
+    }
+
+    // C. STOP WATCHING
+    if ($_GET['api'] === 'stop_watching') {
+        if ($apiUser) {
+            $db->prepare("UPDATE users SET watching_status = 'stopped', current_video_id = NULL, remaining_seconds = 0 WHERE id = ?")
+               ->execute([$apiUser['id']]);
+        }
+        echo json_encode(['status' => 'stopped', 'success' => true]);
+        exit;
+    }
+
+    // D. LIVE BALANCE POLLING
+    if ($_GET['api'] === 'get_balance') {
+        if (!$apiUser) {
+            echo json_encode(['success' => false]);
+            exit;
+        }
+        echo json_encode([
+            'success' => true,
+            'main_balance' => number_format($apiUser['main_balance'], 7),
+            'campaign_balance' => number_format($apiUser['campaign_balance'], 2),
+            'today_earning' => number_format($apiUser['today_earning'], 2),
+            'total_earning' => number_format($apiUser['total_earning'], 2),
+            'today_views' => intval($apiUser['today_views']),
+            'total_views' => intval($apiUser['total_views']),
+            'hourly_views' => intval($apiUser['hourly_views']),
+            'watching_status' => $apiUser['watching_status'],
+            'remaining_seconds' => intval($apiUser['remaining_seconds'])
+        ]);
+        exit;
+    }
+}
+
+// =========================================================================
+// 4. FORM SUBMISSIONS
+// =========================================================================
+$err = '';
+$msg = '';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+
+    // Register
+    if ($_POST['action'] === 'register') {
+        $email = strtolower(trim($_POST['email'] ?? ''));
+        $pass = $_POST['password'] ?? '';
+        $ref = trim($_POST['referral_code'] ?? '');
+
+        if (empty($email) || empty($pass)) {
+            $err = "Email and password are required.";
+        } elseif (strlen($pass) < 6) {
+            $err = "Password must be at least 6 characters.";
+        } else {
+            $chk = $db->prepare("SELECT id FROM users WHERE email = ?");
+            $chk->execute([$email]);
+            if ($chk->fetch()) {
+                $err = "This email is already registered.";
+            } else {
+                $hPass = password_hash($pass, PASSWORD_DEFAULT);
+                $myRef = 'VB' . mt_rand(100000, 999999);
+                $token = bin2hex(random_bytes(24));
+                $today = date('Y-m-d');
+
+                $ins = $db->prepare("INSERT INTO users (email, password, referral_code, referred_by, device_token, last_reset_date) VALUES (?, ?, ?, ?, ?, ?)");
+                $ins->execute([$email, $hPass, $myRef, $ref, $token, $today]);
+
+                $_SESSION['user_id'] = $db->lastInsertId();
+                setcookie('zc_device_token', $token, time() + (86400 * 365), "/");
+
+                // WEB REGISTRATION: STRICTLY REDIRECT TO DOWNLOAD APK PAGE
+                header("Location: index.php?tab=download");
+                exit;
+            }
+        }
+    }
+
+    // Login
+    if ($_POST['action'] === 'login') {
+        $email = strtolower(trim($_POST['email'] ?? ''));
+        $pass = $_POST['password'] ?? '';
+
+        $s = $db->prepare("SELECT * FROM users WHERE email = ?");
+        $s->execute([$email]);
+        $u = $s->fetch();
+
+        if ($u && password_verify($pass, $u['password'])) {
+            $_SESSION['user_id'] = $u['id'];
+            $token = bin2hex(random_bytes(24));
+            $db->prepare("UPDATE users SET device_token = ? WHERE id = ?")->execute([$token, $u['id']]);
+            setcookie('zc_device_token', $token, time() + (86400 * 365), "/");
+
+            $dest = $isApp ? "index.php?tab=home&app=1" : "index.php?tab=download";
+            header("Location: " . $dest);
+            exit;
+        } else {
+            $err = "Invalid email or password.";
+        }
+    }
+
+    // Submit Deposit (EasyPaisa, JazzCash, USDT BEP-20)
+    if ($_POST['action'] === 'submit_deposit' && $currentUser) {
+        $method = trim($_POST['deposit_method'] ?? 'USDT BEP-20');
+        $rawAmount = floatval($_POST['deposit_amount'] ?? 0);
+        $tx = trim($_POST['tx_hash'] ?? '');
+
+        $usdAmount = $rawAmount;
+        if ($method === 'EasyPaisa' || $method === 'JazzCash') {
+            if ($rawAmount < $USD_TO_PKR_RATE) {
+                $err = "Minimum deposit is $USD_TO_PKR_RATE PKR ($1.00 USD).";
+            } else {
+                $usdAmount = round($rawAmount / $USD_TO_PKR_RATE, 2);
+            }
+        } else {
+            if ($rawAmount < 1.00) {
+                $err = "Minimum deposit for USDT is $1.00.";
+            }
+        }
+
+        if (empty($err)) {
+            if (empty($tx)) {
+                $err = "Please enter your Transaction ID (TID / TxHash).";
+            } else {
+                $destAccount = $settings['admin_bep20'];
+                if ($method === 'EasyPaisa') $destAccount = "{$settings['easypaisa_no']} ({$settings['easypaisa_name']})";
+                if ($method === 'JazzCash')  $destAccount = "{$settings['jazzcash_no']} ({$settings['jazzcash_name']})";
+
+                $db->prepare("INSERT INTO transactions (user_id, type, amount, method, wallet_address, tx_hash, status) 
+                              VALUES (?, 'deposit', ?, ?, ?, ?, 'Pending')")
+                   ->execute([$currentUser['id'], $usdAmount, $method, $destAccount, $tx]);
+                $msg = "Deposit proof submitted! Admin will verify and credit $$usdAmount Campaign Funds.";
+            }
+        }
+    }
+
+    // Confirm Withdraw (STRICTLY LOCKED TO USDT BEP-20 ONLY)
+    if ($_POST['action'] === 'confirm_withdraw' && $currentUser) {
+        $amt = floatval($_POST['amount'] ?? 0);
+        $addr = trim($_POST['wallet_address'] ?? '');
+
+        if ($amt < $MIN_WITHDRAW) {
+            $err = "Minimum withdrawal is $" . number_format($MIN_WITHDRAW, 2);
+        } elseif ($amt > (float)$currentUser['main_balance']) {
+            $err = "Insufficient balance! Available: $" . number_format($currentUser['main_balance'], 4);
+        } elseif (!preg_match('/^0x[a-fA-F0-9]{40}$/', $addr)) {
+            $err = "Please enter a valid USDT BEP-20 (0x...) wallet address.";
+        } else {
+            try {
+                $db->beginTransaction();
+                $db->prepare("UPDATE users SET main_balance = main_balance - ? WHERE id = ? AND main_balance >= ?")
+                   ->execute([$amt, $currentUser['id'], $amt]);
+                
+                $db->prepare("INSERT INTO transactions (user_id, type, amount, method, wallet_address, status) 
+                              VALUES (?, 'withdraw', ?, 'USDT BEP-20', ?, 'Processing')")
+                   ->execute([$currentUser['id'], $amt, $addr]);
+
+                $db->commit();
+                $currentUser['main_balance'] -= $amt;
+                $msg = "Withdrawal request submitted! Processing USDT on BEP-20.";
+            } catch (Throwable $e) {
+                if ($db->inTransaction()) $db->rollBack();
+                $err = "Withdrawal failed: " . $e->getMessage();
+            }
+        }
+    }
+
+    // Create Campaign (Starts from 10 views min, clean pricing)
+    if ($_POST['action'] === 'create_campaign' && $currentUser) {
+        $vUrl = trim($_POST['video_url'] ?? '');
+        $views = intval($_POST['views'] ?? 10);
+        $duration = intval($_POST['duration'] ?? 15);
+
+        $costPerView = floatval($settings['cost_15s']);
+        if ($duration >= 60) $costPerView = floatval($settings['cost_60s']);
+        elseif ($duration >= 30) $costPerView = floatval($settings['cost_30s']);
+
+        $totalCost = round($views * $costPerView, 4);
+
+        preg_match('/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([\w-]{11})/', $vUrl, $m);
+        $vid = $m[1] ?? '';
+
+        if (empty($vid) || $views < 10) {
+            $err = "Valid YouTube link and minimum 10 views required.";
+        } elseif ($currentUser['campaign_balance'] < $totalCost) {
+            $err = "Insufficient Campaign Funds ($" . number_format($totalCost, 4) . " required). Please deposit funds.";
+        } else {
+            try {
+                $db->beginTransaction();
+                $deduct = $db->prepare("UPDATE users SET campaign_balance = campaign_balance - ? WHERE id = ? AND campaign_balance >= ?");
+                $deduct->execute([$totalCost, $currentUser['id'], $totalCost]);
+
+                $db->prepare("INSERT INTO videos (user_id, video_id, title, target_views, completed_views, duration, cost, is_active) 
+                              VALUES (?, ?, 'User Campaign', ?, 0, ?, ?, 1)")
+                   ->execute([$currentUser['id'], $vid, $views, $duration, $totalCost]);
+
+                // Negative ledger record in red for campaign purchase
+                $db->prepare("INSERT INTO transactions (user_id, type, amount, method, wallet_address, status) 
+                              VALUES (?, 'campaign', ?, 'Campaign Purchase', ?, 'Paid')")
+                   ->execute([$currentUser['id'], -$totalCost, "Bought $views Views ($duration s) for $vid"]);
+
+                $db->commit();
+                $currentUser['campaign_balance'] -= $totalCost;
+                $msg = "Campaign launched successfully! Added to watch queue.";
+            } catch (Throwable $e) {
+                if ($db->inTransaction()) $db->rollBack();
+                $err = "Error launching campaign: " . $e->getMessage();
+            }
+        }
+    }
+}
+
+// =========================================================================
+// 5. BROWSER GATEWAY: CHROME BROWSERS STRICTLY SHOW DOWNLOAD APK ONLY
+// =========================================================================
+$tab = $_GET['tab'] ?? ($currentUser ? 'home' : 'login');
+if (!$isApp && $currentUser && in_array($tab, ['home', 'promote', 'invite', 'account', 'history'])) {
+    $tab = 'download';
+}
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>ViewBoost - Watch & Earn</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body { background-color: #F3F4F9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #111827; }
+        .top-gradient { background: linear-gradient(135deg, #0284C7 0%, #0369A1 50%, #4338CA 100%); border-bottom-left-radius: 32px; border-bottom-right-radius: 32px; }
+        .btn-launch { background: linear-gradient(135deg, #0284C7 0%, #4F46E5 100%); letter-spacing: 1px; transition: all 0.2s; }
+        .btn-launch:active { transform: scale(0.98); }
+        .side-drawer { transition: transform 0.3s ease-in-out; transform: translateX(100%); }
+        .side-drawer.open { transform: translateX(0); }
+        .bottom-nav { background: rgba(255, 255, 255, 0.98); backdrop-filter: blur(10px); }
+    </style>
+</head>
+<body class="min-h-screen pb-28">
+
+<?php if (!$currentUser): ?>
+    <!-- ----------------- LOGIN & REGISTER FORMS ----------------- -->
+    <div class="max-w-md mx-auto p-6 min-h-screen flex flex-col justify-center">
+        <div class="bg-white rounded-3xl p-8 shadow-xl border border-gray-100 space-y-6">
+            <div class="text-center space-y-2">
+                <div class="w-16 h-16 rounded-2xl bg-[#0A0F1E] border-2 border-sky-400 flex items-center justify-center mx-auto shadow-lg shadow-sky-500/20">
+                    <svg class="w-9 h-9 text-sky-400" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M4 3L12 18L20 3H16L12 11L8 3H4Z"/>
+                        <path d="M10 7L14 10L10 13V7Z" fill="#FFFFFF"/>
+                    </svg>
+                </div>
+                <h2 class="text-2xl font-black text-gray-900 tracking-tight">VIEWBOOST</h2>
+                <p class="text-xs text-gray-500">Autonomous Video Watching & Promotion Platform</p>
+            </div>
+
+            <div class="flex border-b border-gray-100 pb-2 text-center text-sm font-bold">
+                <a href="?tab=login" class="flex-1 pb-2 <?= $tab === 'login' ? 'text-sky-600 border-b-2 border-sky-600' : 'text-gray-400' ?>">Sign In</a>
+                <a href="?tab=register" class="flex-1 pb-2 <?= $tab === 'register' ? 'text-sky-600 border-b-2 border-sky-600' : 'text-gray-400' ?>">Register</a>
+            </div>
+
+            <?php if ($err): ?><div class="p-3 bg-red-50 text-red-600 rounded-xl text-xs font-bold text-center"><?= htmlspecialchars($err) ?></div><?php endif; ?>
+
+            <form method="POST" class="space-y-4">
+                <input type="hidden" name="action" value="<?= $tab === 'register' ? 'register' : 'login' ?>">
+                <div>
+                    <label class="text-xs font-bold text-gray-600 block mb-1">Email Address</label>
+                    <input type="email" name="email" required placeholder="name@example.com" class="w-full bg-[#F7F8FB] border border-[#EEF0F5] rounded-xl px-4 py-3 text-xs focus:outline-none focus:border-sky-500">
+                </div>
+                <div>
+                    <label class="text-xs font-bold text-gray-600 block mb-1">Password</label>
+                    <input type="password" name="password" required placeholder="••••••••" class="w-full bg-[#F7F8FB] border border-[#EEF0F5] rounded-xl px-4 py-3 text-xs focus:outline-none focus:border-sky-500">
+                </div>
+                <?php if ($tab === 'register'): ?>
+                <div>
+                    <label class="text-xs font-bold text-gray-600 block mb-1">Invitation Code (Optional)</label>
+                    <input type="text" name="referral_code" value="<?= htmlspecialchars($_GET['ref'] ?? '') ?>" placeholder="VB123456" class="w-full bg-[#F7F8FB] border border-[#EEF0F5] rounded-xl px-4 py-3 text-xs font-mono">
+                </div>
+                <?php endif; ?>
+                <button type="submit" class="w-full h-12 rounded-full bg-gradient-to-r from-sky-500 to-indigo-600 text-white font-bold text-xs uppercase tracking-wider shadow-lg shadow-sky-500/25">
+                    <?= $tab === 'register' ? 'REGISTER & GET APK' : 'SIGN IN' ?>
+                </button>
+            </form>
+        </div>
+    </div>
+<?php else: ?>
+
+    <!-- ----------------- SIDE DRAWER (3-DOTS / HAMBURGER) ----------------- -->
+    <div id="drawer-overlay" onclick="toggleMenu()" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 hidden transition-opacity"></div>
+    <div id="side-drawer" class="side-drawer fixed top-0 right-0 bottom-0 w-[280px] bg-white z-50 shadow-2xl flex flex-col justify-between p-6">
+        <div class="space-y-6">
+            <div class="flex items-center justify-between border-b border-gray-100 pb-4">
+                <div class="flex items-center space-x-3">
+                    <div class="w-10 h-10 rounded-xl bg-[#0A0F1E] border border-sky-400 flex items-center justify-center shadow">
+                        <svg class="w-5 h-5 text-sky-400" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M4 3L12 18L20 3H16L12 11L8 3H4Z"/>
+                        </svg>
+                    </div>
+                    <div>
+                        <h4 class="text-xs font-bold text-gray-900 truncate max-w-[140px]"><?= htmlspecialchars($currentUser['email']) ?></h4>
+                        <span class="text-[10px] text-green-500 font-semibold">● Active Member</span>
+                    </div>
+                </div>
+                <button onclick="toggleMenu()" class="text-gray-400 p-1"><i class="fa-solid fa-xmark text-lg"></i></button>
+            </div>
+
+            <!-- In-App Menu Items Only (Download APK is REMOVED from in-app drawer) -->
+            <nav class="space-y-2 text-sm font-semibold">
+                <a href="?tab=home" class="flex items-center gap-3 px-4 py-3 rounded-2xl <?= $tab === 'home' ? 'bg-sky-50 text-sky-600' : 'text-gray-600 hover:bg-gray-50' ?>">
+                    <i class="fa-solid fa-house w-5"></i>
+                    <span>Dashboard</span>
+                </a>
+                <a href="?tab=promote" class="flex items-center gap-3 px-4 py-3 rounded-2xl <?= $tab === 'promote' ? 'bg-sky-50 text-sky-600' : 'text-gray-600 hover:bg-gray-50' ?>">
+                    <i class="fa-solid fa-bullhorn w-5 text-indigo-500"></i>
+                    <span>Promote Video</span>
+                </a>
+                <a href="?tab=invite" class="flex items-center gap-3 px-4 py-3 rounded-2xl <?= $tab === 'invite' ? 'bg-sky-50 text-sky-600' : 'text-gray-600 hover:bg-gray-50' ?>">
+                    <i class="fa-solid fa-users w-5 text-purple-500"></i>
+                    <span>Invite Friends (61%)</span>
+                </a>
+                <a href="?tab=account" class="flex items-center gap-3 px-4 py-3 rounded-2xl <?= $tab === 'account' ? 'bg-sky-50 text-sky-600' : 'text-gray-600 hover:bg-gray-50' ?>">
+                    <i class="fa-solid fa-user-gear w-5 text-sky-500"></i>
+                    <span>Account Profile</span>
+                </a>
+                <a href="?tab=history" class="flex items-center gap-3 px-4 py-3 rounded-2xl <?= $tab === 'history' ? 'bg-sky-50 text-sky-600' : 'text-gray-600 hover:bg-gray-50' ?>">
+                    <i class="fa-solid fa-clock-rotate-left w-5 text-amber-500"></i>
+                    <span>Full History Ledger</span>
+                </a>
+            </nav>
+        </div>
+
+        <div class="border-t border-gray-100 pt-4">
+            <a href="?action=logout" class="flex items-center gap-3 px-4 py-3 rounded-2xl text-red-600 hover:bg-red-50 text-sm font-bold">
+                <i class="fa-solid fa-arrow-right-from-bracket w-5"></i>
+                <span>Sign Out</span>
+            </a>
+        </div>
+    </div>
+
+    <!-- ----------------- MAIN VIEW CONTENT ----------------- -->
+    <div class="max-w-md mx-auto">
+        <?php if ($err): ?><div class="m-4 p-3.5 bg-red-50 text-red-600 rounded-2xl text-xs font-bold shadow-sm"><?= htmlspecialchars($err) ?></div><?php endif; ?>
+        <?php if ($msg): ?><div class="m-4 p-3.5 bg-green-50 text-green-700 rounded-2xl text-xs font-bold shadow-sm"><?= htmlspecialchars($msg) ?></div><?php endif; ?>
+
+        <!-- ==================== TAB 1: HOME PAGE ==================== -->
+        <?php if ($tab === 'home'): ?>
+            <div class="top-gradient px-6 pt-5 pb-8 text-white shadow-lg space-y-5">
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center space-x-2">
+                        <div class="w-10 h-10 rounded-xl bg-[#0A0F1E] border border-sky-400 flex items-center justify-center shadow-md">
+                            <svg class="w-6 h-6 text-sky-400" viewBox="0 0 24 24" fill="currentColor">
+                                <path d="M4 3L12 18L20 3H16L12 11L8 3H4Z"/>
+                                <path d="M10 7L14 10L10 13V7Z" fill="#FFFFFF"/>
+                            </svg>
+                        </div>
+                        <span class="font-black text-sm tracking-wide">VIEWBOOST</span>
+                    </div>
+                    <button onclick="toggleMenu()" class="text-white p-2 text-xl focus:outline-none">
+                        <i class="fa-solid fa-bars"></i>
+                    </button>
+                </div>
+
+                <div class="space-y-1">
+                    <span class="text-white/70 text-[14px] font-medium tracking-wide">Balance</span>
+                    <h1 class="text-[36px] font-bold tracking-tight text-white leading-tight" id="disp-balance">
+                        $<?= number_format($currentUser['main_balance'], 7) ?>
+                    </h1>
+                </div>
+
+                <div class="flex items-center gap-3 pt-1">
+                    <button onclick="openModal('withdraw-modal')" class="flex-1 bg-white text-sky-700 h-[44px] rounded-full text-sm font-bold shadow-sm flex items-center justify-center uppercase">
+                        WITHDRAW
+                    </button>
+                    <!-- Navigates directly to full dedicated history page -->
+                    <a href="?tab=history" class="flex-1 bg-transparent border-[1.5px] border-white text-white h-[44px] rounded-full text-sm font-semibold flex items-center justify-center uppercase">
+                        HISTORY
+                    </a>
+                </div>
+            </div>
+
+            <!-- Launch / Stop Watching Card -->
+            <div class="bg-white rounded-[24px] shadow-sm border border-gray-100 m-4 p-5 text-center space-y-3">
+                <div id="inapp-timer-box" class="<?= $currentUser['watching_status'] === 'running' ? '' : 'hidden' ?>">
+                    <h2 id="inapp-sec" class="text-4xl font-black text-gray-900 font-mono tracking-tight"><?= max(1, $currentUser['remaining_seconds']) ?>s</h2>
+                    <span class="text-[11px] text-green-600 font-bold block animate-pulse mt-1">● Watching verified video...</span>
+                </div>
+
+                <button id="btn-action-main" onclick="handleMainAction()" class="w-full h-[54px] rounded-[50px] font-bold text-[16px] tracking-[1px] flex items-center justify-center uppercase shadow-md transition <?= $currentUser['watching_status'] === 'running' ? 'bg-red-600 text-white' : 'btn-launch text-white' ?>">
+                    <?= $currentUser['watching_status'] === 'running' ? 'STOP WATCHING' : 'LAUNCH' ?>
+                </button>
+            </div>
+
+            <div class="text-center pb-2">
+                <span class="inline-block bg-white text-gray-500 text-xs px-4 py-1.5 rounded-full shadow-sm border border-gray-100">
+                    Turn on the sound to keep earning
+                </span>
+            </div>
+
+            <!-- Live Database Statistics -->
+            <div class="bg-white rounded-[24px] shadow-sm border border-gray-100 mx-4 p-6 space-y-6">
+                <h2 class="text-[22px] font-black text-black tracking-tight uppercase">STATISTICS</h2>
+
+                <div class="space-y-2">
+                    <h3 class="text-[15px] font-semibold text-[#6B7280]">Earned</h3>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div class="bg-[#F7F8FB] border border-[#EEF0F5] rounded-[16px] p-4">
+                            <span class="text-xs text-[#6B7280] font-medium block">Today</span>
+                            <p class="text-[22px] font-bold text-black" id="disp-today-earn">$<?= number_format($currentUser['today_earning'], 2) ?></p>
+                        </div>
+                        <div class="bg-[#F7F8FB] border border-[#EEF0F5] rounded-[16px] p-4">
+                            <span class="text-xs text-[#6B7280] font-medium block">Total Earned</span>
+                            <p class="text-[22px] font-bold text-black" id="disp-total-earn">$<?= number_format($currentUser['total_earning'], 2) ?></p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="space-y-2">
+                    <h3 class="text-[15px] font-semibold text-[#6B7280]">Video views</h3>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div class="bg-[#F7F8FB] border border-[#EEF0F5] rounded-[16px] p-4">
+                            <span class="text-xs text-[#6B7280] font-medium block">Today</span>
+                            <p class="text-[22px] font-bold text-black" id="disp-today-views"><?= $currentUser['today_views'] ?></p>
+                        </div>
+                        <div class="bg-[#F7F8FB] border border-[#EEF0F5] rounded-[16px] p-4">
+                            <span class="text-xs text-[#6B7280] font-medium block">Total Views</span>
+                            <p class="text-[22px] font-bold text-black" id="disp-total-views"><?= $currentUser['total_views'] ?></p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="space-y-2">
+                    <h3 class="text-[15px] font-semibold text-[#6B7280]">Limits</h3>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div class="bg-[#F7F8FB] border border-[#EEF0F5] rounded-[16px] p-4">
+                            <span class="text-xs text-[#6B7280] font-medium block">Hourly Limit</span>
+                            <p class="text-[22px] font-bold text-black"><?= $currentUser['hourly_views'] ?> / <?= $HOURLY_LIMIT ?></p>
+                        </div>
+                        <div class="bg-[#F7F8FB] border border-[#EEF0F5] rounded-[16px] p-4">
+                            <span class="text-xs text-[#6B7280] font-medium block">Daily Limit</span>
+                            <p class="text-[22px] font-bold text-black"><?= $currentUser['today_views'] ?> / <?= $DAILY_LIMIT ?></p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        <!-- ==================== TAB 2: PROMOTE VIDEO (CLEAN UI & 10 MIN VIEWS) ==================== -->
+        <?php elseif ($tab === 'promote'): ?>
+            <div class="p-4 space-y-4">
+                <div class="bg-white rounded-3xl p-6 shadow-sm border border-gray-100 space-y-4">
+                    <div class="flex justify-between items-center pb-2 border-b border-gray-100">
+                        <h2 class="text-base font-black text-gray-900 uppercase">Promote Video</h2>
+                        <span class="text-xs font-bold text-sky-600">Campaign Funds: $<?= number_format($currentUser['campaign_balance'], 2) ?></span>
+                    </div>
+
+                    <form method="POST" class="space-y-3.5">
+                        <input type="hidden" name="action" value="create_campaign">
+                        <div>
+                            <label class="text-xs font-bold text-gray-600 block mb-1">YouTube Video Link</label>
+                            <input type="url" name="video_url" required placeholder="https://youtu.be/..." class="w-full bg-[#F7F8FB] border border-[#EEF0F5] rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:border-sky-500">
+                        </div>
+                        <div class="grid grid-cols-2 gap-2">
+                            <div>
+                                <label class="text-xs font-bold text-gray-600 block mb-1">Target Views (Min 10)</label>
+                                <input type="number" id="pviews" name="views" min="10" value="10" oninput="calcCost()" required class="w-full bg-[#F7F8FB] border border-[#EEF0F5] rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:border-sky-500 font-bold">
+                            </div>
+                            <div>
+                                <label class="text-xs font-bold text-gray-600 block mb-1">Watch Duration</label>
+                                <select name="duration" id="pduration" onchange="calcCost()" class="w-full bg-[#F7F8FB] border border-[#EEF0F5] rounded-xl px-4 py-2.5 text-xs font-bold text-gray-700">
+                                    <option value="15">15 Seconds</option>
+                                    <option value="30">30 Seconds</option>
+                                    <option value="60">60 Seconds</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="bg-[#F7F8FB] p-3 rounded-xl flex justify-between text-xs font-bold text-gray-600 border border-[#EEF0F5]">
+                            <span>Total Campaign Cost:</span>
+                            <span id="pcost" class="text-sky-600 font-black">$0.0080</span>
+                        </div>
+                        <button type="submit" class="w-full h-12 rounded-full bg-gradient-to-r from-sky-500 to-indigo-600 text-white font-bold text-xs uppercase shadow-md">
+                            LAUNCH CAMPAIGN
+                        </button>
+                    </form>
+                </div>
+
+                <div class="bg-white rounded-3xl p-6 shadow-sm border border-gray-100 space-y-3">
+                    <h3 class="text-xs font-black text-gray-400 uppercase tracking-wider">Your Active Campaigns</h3>
+                    <?php
+                    $myTasks = $db->prepare("SELECT * FROM videos WHERE user_id = ? ORDER BY id DESC");
+                    $myTasks->execute([$currentUser['id']]);
+                    $taskList = $myTasks->fetchAll();
+                    ?>
+                    <?php if (empty($taskList)): ?>
+                        <p class="text-xs text-gray-400 text-center py-4">No campaigns created yet.</p>
+                    <?php else: ?>
+                        <div class="space-y-3">
+                            <?php foreach ($taskList as $t): ?>
+                                <?php $isDone = ($t['completed_views'] >= $t['target_views']); ?>
+                                <div class="bg-[#F7F8FB] p-3.5 rounded-2xl border border-[#EEF0F5] space-y-2 text-xs">
+                                    <div class="flex justify-between items-center font-bold">
+                                        <span class="text-gray-900">ID: <?= htmlspecialchars($t['video_id']) ?> (<?= $t['duration'] ?>s)</span>
+                                        <span class="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase <?= $isDone ? 'bg-green-100 text-green-700 border border-green-300' : 'bg-sky-100 text-sky-700' ?>">
+                                            <?= $isDone ? 'COMPLETED' : 'PROCESSING' ?>
+                                        </span>
+                                    </div>
+                                    <div class="flex justify-between text-[11px] text-gray-500 font-semibold">
+                                        <span>Target 🎯 <?= $t['target_views'] ?> views | Completed: <?= $t['completed_views'] ?></span>
+                                        <span><?= max(0, $t['target_views'] - $t['completed_views']) ?> remaining</span>
+                                    </div>
+                                    <div class="w-full bg-gray-200 h-2 rounded-full overflow-hidden">
+                                        <div class="bg-sky-500 h-full rounded-full" style="width: <?= min(100, ($t['completed_views'] / $t['target_views']) * 100) ?>%"></div>
+                                    </div>
+                                    <?php if ($isDone): ?>
+                                    <p class="text-[10px] text-green-600 font-bold pt-1">Target views completed: <?= $t['target_views'] ?>. Campaign completed, thank you!</p>
+                                    <?php endif; ?>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                    <?php endif; ?>
+                </div>
+            </div>
+
+        <!-- ==================== TAB 3: INVITE FRIENDS ==================== -->
+        <?php elseif ($tab === 'invite'): ?>
+            <div class="p-4 space-y-4">
+                <div class="bg-white rounded-3xl p-6 shadow-sm border border-gray-100 space-y-5 text-center">
+                    <span class="inline-block bg-sky-50 text-sky-600 text-xs font-black px-3.5 py-1 rounded-full uppercase tracking-wide">
+                        3-TIER LIFETIME COMMISSION (61%)
+                    </span>
+                    <h3 class="text-lg font-black text-gray-900">Earn up to 61% Passive Royalty</h3>
+                    <p class="text-xs text-gray-500">Instant USDT commission credited to your balance on every single video watched by your network.</p>
+
+                    <div class="grid grid-cols-3 gap-2 text-center pt-1">
+                        <div class="bg-[#F7F8FB] p-3 rounded-2xl border border-sky-100">
+                            <span class="text-[10px] text-gray-400 font-bold block">LEVEL 1</span>
+                            <p class="text-lg font-black text-sky-600 mt-0.5">50%</p>
+                        </div>
+                        <div class="bg-[#F7F8FB] p-3 rounded-2xl border border-sky-100">
+                            <span class="text-[10px] text-gray-400 font-bold block">LEVEL 2</span>
+                            <p class="text-lg font-black text-indigo-600 mt-0.5">10%</p>
+                        </div>
+                        <div class="bg-[#F7F8FB] p-3 rounded-2xl border border-sky-100">
+                            <span class="text-[10px] text-gray-400 font-bold block">LEVEL 3</span>
+                            <p class="text-lg font-black text-purple-600 mt-0.5">1%</p>
+                        </div>
+                    </div>
+
+                    <div class="text-left space-y-1 pt-2">
+                        <label class="text-xs font-bold text-gray-600">Your Referral Code</label>
+                        <div class="flex gap-2">
+                            <input type="text" readonly id="ref-val" value="<?= $currentUser['referral_code'] ?>" class="w-full bg-[#F7F8FB] border border-[#EEF0F5] rounded-xl px-4 py-2.5 text-xs font-mono font-bold text-center">
+                            <button onclick="copyText('<?= $currentUser['referral_code'] ?>')" class="bg-sky-600 text-white px-5 rounded-xl text-xs font-bold">Copy</button>
+                        </div>
+                    </div>
+
+                    <div class="text-left space-y-1">
+                        <label class="text-xs font-bold text-gray-600">Your Referral Link</label>
+                        <?php $refUrl = (isset($_SERVER['HTTPS']) ? "https" : "http") . "://$_SERVER[HTTP_HOST]$_SERVER[PHP_SELF]?ref=" . $currentUser['referral_code']; ?>
+                        <div class="flex gap-2">
+                            <input type="text" readonly value="<?= $refUrl ?>" class="w-full bg-[#F7F8FB] border border-[#EEF0F5] rounded-xl px-4 py-2.5 text-xs text-gray-500 truncate">
+                            <button onclick="copyText('<?= $refUrl ?>')" class="bg-sky-600 text-white px-5 rounded-xl text-xs font-bold">Copy</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-3xl p-6 shadow-sm border border-gray-100 space-y-3">
+                    <div class="flex justify-between items-center pb-2 border-b border-gray-100">
+                        <h3 class="text-xs font-black text-gray-900 uppercase">My Direct Team (Level 1)</h3>
+                        <?php
+                        $tCount = $db->prepare("SELECT COUNT(*) FROM users WHERE referred_by = ?");
+                        $tCount->execute([$currentUser['referral_code']]);
+                        ?>
+                        <span class="text-xs font-bold text-sky-600"><?= $tCount->fetchColumn() ?> Members</span>
+                    </div>
+
+                    <?php
+                    $teamStmt = $db->prepare("SELECT email, total_views, created_at FROM users WHERE referred_by = ? ORDER BY id DESC LIMIT 50");
+                    $teamStmt->execute([$currentUser['referral_code']]);
+                    $teamList = $teamStmt->fetchAll();
+                    ?>
+                    <?php if (empty($teamList)): ?>
+                        <p class="text-xs text-gray-400 text-center py-6">No referrals yet. Share your code to earn 50% commission!</p>
+                    <?php else: ?>
+                        <div class="space-y-2.5">
+                            <?php foreach ($teamList as $m): ?>
+                                <?php
+                                $emParts = explode('@', $m['email']);
+                                $maskedEmail = substr($emParts[0], 0, 3) . '***@' . ($emParts[1] ?? 'gmail.com');
+                                $commEarned = $m['total_views'] * floatval($settings['reward_15s']) * 0.50;
+                                ?>
+                                <div class="bg-[#F7F8FB] p-3 rounded-2xl border border-[#EEF0F5] flex justify-between items-center text-xs">
+                                    <div>
+                                        <span class="font-bold text-gray-800 block"><?= htmlspecialchars($maskedEmail) ?></span>
+                                        <span class="text-[10px] text-gray-400">Joined: <?= date('M d, Y', strtotime($m['created_at'])) ?></span>
+                                    </div>
+                                    <div class="text-right">
+                                        <span class="font-bold text-sky-600"><?= $m['total_views'] ?> views</span>
+                                        <span class="text-[10px] text-emerald-600 block font-black">+$<?= number_format($commEarned, 4) ?></span>
+                                    </div>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                    <?php endif; ?>
+                </div>
+            </div>
+
+        <!-- ==================== TAB 4: ACCOUNT PROFILE (SCREENSHOT EXACT MATCH) ==================== -->
+        <?php elseif ($tab === 'account'): ?>
+            <div class="p-4 space-y-4">
+                <div class="bg-white rounded-3xl p-6 shadow-sm border border-gray-100 space-y-5">
+                    <div class="flex items-center justify-between">
+                        <b class="text-sm font-black text-gray-900 truncate max-w-[200px]"><?= htmlspecialchars($currentUser['email']) ?></b>
+                        <span class="bg-sky-50 text-sky-700 text-xs font-bold px-3.5 py-1 rounded-full font-mono">
+                            Ref: <?= $currentUser['referral_code'] ?>
+                        </span>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-3 pt-1">
+                        <div class="bg-[#F9FFFB] border border-[#D1FAE5] rounded-2xl text-center p-4">
+                            <div class="text-[11px] text-green-700 font-black uppercase tracking-wider">MAIN BALANCE</div>
+                            <h2 class="text-xl font-black text-gray-900 mt-1">$<?= number_format($currentUser['main_balance'], 4) ?></h2>
+                            <small class="text-[10px] text-gray-400 block mt-0.5">Withdrawable</small>
+                        </div>
+                        <div class="bg-[#FDF9FF] border border-[#E9D5FF] rounded-2xl text-center p-4">
+                            <div class="text-[11px] text-purple-700 font-black uppercase tracking-wider">CAMPAIGN FUNDS</div>
+                            <h2 class="text-xl font-black text-gray-900 mt-1">$<?= number_format($currentUser['campaign_balance'], 2) ?></h2>
+                            <small class="text-[10px] text-gray-400 block mt-0.5">Promote Videos</small>
+                        </div>
+                    </div>
+
+                    <div class="flex gap-3 pt-1">
+                        <button onclick="openModal('withdraw-modal')" class="flex-1 bg-[#16A34A] hover:bg-green-700 text-white h-12 rounded-full font-black text-xs uppercase shadow-md flex items-center justify-center">
+                            WITHDRAW
+                        </button>
+                        <button onclick="openModal('deposit-modal')" class="flex-1 bg-gradient-to-r from-sky-500 to-indigo-600 text-white h-12 rounded-full font-black text-xs uppercase shadow-md flex items-center justify-center">
+                            + DEPOSIT FUNDS
+                        </button>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-3xl p-2 shadow-sm border border-gray-100 divide-y divide-gray-100">
+                    <a href="?tab=history&filter=deposit" class="w-full flex items-center justify-between p-4 hover:bg-gray-50 rounded-2xl transition">
+                        <div class="flex items-center gap-3.5">
+                            <div class="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center text-sm"><i class="fa-solid fa-receipt"></i></div>
+                            <div class="text-left">
+                                <h4 class="text-xs font-bold text-gray-900">Deposit History</h4>
+                                <p class="text-[10px] text-gray-400">View submitted deposits & TID approvals</p>
+                            </div>
+                        </div>
+                        <span class="text-gray-400 text-xs font-bold">▶️</span>
+                    </a>
+
+                    <a href="?tab=history&filter=earn" class="w-full flex items-center justify-between p-4 hover:bg-gray-50 rounded-2xl transition">
+                        <div class="flex items-center gap-3.5">
+                            <div class="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center text-sm"><i class="fa-solid fa-chart-line"></i></div>
+                            <div class="text-left">
+                                <h4 class="text-xs font-bold text-gray-900">Balance History</h4>
+                                <p class="text-[10px] text-gray-400">Detailed earning logs from video views</p>
+                            </div>
+                        </div>
+                        <span class="text-gray-400 text-xs font-bold">▶️</span>
+                    </a>
+
+                    <a href="?tab=history&filter=withdraw" class="w-full flex items-center justify-between p-4 hover:bg-gray-50 rounded-2xl transition">
+                        <div class="flex items-center gap-3.5">
+                            <div class="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center text-sm"><i class="fa-solid fa-clock-rotate-left"></i></div>
+                            <div class="text-left">
+                                <h4 class="text-xs font-bold text-gray-900">Withdraw History</h4>
+                                <p class="text-[10px] text-gray-400">Paid payouts & transaction records</p>
+                            </div>
+                        </div>
+                        <span class="text-gray-400 text-xs font-bold">▶️</span>
+                    </a>
+                </div>
+            </div>
+
+        <!-- ==================== TAB 5: DEDICATED FULL HISTORY LEDGER ==================== -->
+        <?php elseif ($tab === 'history'): ?>
+            <?php $filter = $_GET['filter'] ?? 'all'; ?>
+            <div class="p-4 space-y-4">
+                <div class="bg-white rounded-3xl p-6 shadow-sm border border-gray-100 space-y-4">
+                    <div class="flex justify-between items-center pb-2 border-b border-gray-100">
+                        <h2 class="text-base font-black text-gray-900 uppercase">Full History Ledger</h2>
+                        <a href="?tab=home" class="text-xs text-sky-600 font-bold">← Dashboard</a>
+                    </div>
+
+                    <div class="flex gap-2 text-xs font-bold overflow-x-auto pb-2">
+                        <a href="?tab=history&filter=all" class="px-3 py-1 rounded-full <?= $filter === 'all' ? 'bg-sky-600 text-white' : 'bg-gray-100 text-gray-600' ?>">All</a>
+                        <a href="?tab=history&filter=earn" class="px-3 py-1 rounded-full <?= $filter === 'earn' ? 'bg-sky-600 text-white' : 'bg-gray-100 text-gray-600' ?>">Earnings</a>
+                        <a href="?tab=history&filter=campaign" class="px-3 py-1 rounded-full <?= $filter === 'campaign' ? 'bg-sky-600 text-white' : 'bg-gray-100 text-gray-600' ?>">Campaigns</a>
+                        <a href="?tab=history&filter=deposit" class="px-3 py-1 rounded-full <?= $filter === 'deposit' ? 'bg-sky-600 text-white' : 'bg-gray-100 text-gray-600' ?>">Deposits</a>
+                        <a href="?tab=history&filter=withdraw" class="px-3 py-1 rounded-full <?= $filter === 'withdraw' ? 'bg-sky-600 text-white' : 'bg-gray-100 text-gray-600' ?>">Withdrawals</a>
+                    </div>
+
+                    <?php
+                    $sql = "SELECT * FROM transactions WHERE user_id = ?";
+                    $params = [$currentUser['id']];
+                    if ($filter === 'earn') {
+                        $sql .= " AND type IN ('earn', 'referral')";
+                    } elseif ($filter === 'campaign') {
+                        $sql .= " AND type = 'campaign'";
+                    } elseif ($filter === 'deposit') {
+                        $sql .= " AND type = 'deposit'";
+                    } elseif ($filter === 'withdraw') {
+                        $sql .= " AND type = 'withdraw'";
+                    }
+                    $sql .= " ORDER BY id DESC LIMIT 50";
+                    $hStmt = $db->prepare($sql);
+                    $hStmt->execute($params);
+                    $hList = $hStmt->fetchAll();
+                    ?>
+
+                    <?php if (empty($hList)): ?>
+                        <p class="text-xs text-gray-400 text-center py-6">No transaction records found.</p>
+                    <?php else: ?>
+                        <div class="space-y-3">
+                            <?php foreach ($hList as $h): ?>
+                                <div class="bg-[#F7F8FB] p-3.5 rounded-2xl border border-[#EEF0F5] text-xs space-y-1.5">
+                                    <div class="flex justify-between items-center font-bold">
+                                        <span class="text-gray-900"><?= htmlspecialchars($h['method']) ?></span>
+                                        <span class="text-sm font-black <?= $h['amount'] < 0 ? 'text-red-600' : 'text-emerald-600' ?>">
+                                            <?= $h['amount'] < 0 ? '-$' . number_format(abs($h['amount']), 4) : '+$' . number_format($h['amount'], 4) ?>
+                                        </span>
+                                    </div>
+                                    <p class="text-[11px] text-gray-600"><?= htmlspecialchars($h['wallet_address']) ?></p>
+                                    <div class="flex justify-between items-center text-[10px] text-gray-400 pt-1 border-t border-gray-200/50">
+                                        <span><?= date('M d, Y H:i:s', strtotime($h['created_at'])) ?></span>
+                                        <span class="px-2 py-0.5 rounded-full font-bold uppercase <?= $h['status'] === 'Paid' ? 'bg-green-100 text-green-700' : ($h['status'] === 'Rejected' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700') ?>">
+                                            <?= $h['status'] ?>
+                                        </span>
+                                    </div>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                    <?php endif; ?>
+                </div>
+            </div>
+
+        <!-- ==================== TAB 6: DOWNLOAD APK LANDING PAGE (CHROME GATEWAY) ==================== -->
+        <?php elseif ($tab === 'download'): ?>
+            <div class="p-4 space-y-4">
+                <div class="bg-white rounded-3xl p-6 shadow-sm border border-gray-100 text-center space-y-5">
+                    <div class="w-20 h-20 bg-emerald-50 text-emerald-600 rounded-3xl flex items-center justify-center mx-auto text-4xl shadow-inner border border-emerald-200">
+                        <i class="fa-brands fa-android"></i>
+                    </div>
+
+                    <div class="space-y-1">
+                        <h3 class="text-xl font-black text-gray-900">Download ViewBoost Official APK</h3>
+                        <p class="text-xs text-gray-500 leading-relaxed">Watch short YouTube videos and earn real USDT automatically directly on your Android mobile device.</p>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-2 text-left">
+                        <div class="bg-[#F7F8FB] p-3 rounded-2xl border border-[#EEF0F5]">
+                            <span class="text-[10px] text-gray-400 font-bold block">DAILY LIMIT</span>
+                            <span class="text-xs font-black text-gray-900">900 Videos / Day</span>
+                        </div>
+                        <div class="bg-[#F7F8FB] p-3 rounded-2xl border border-[#EEF0F5]">
+                            <span class="text-[10px] text-gray-400 font-bold block">HOURLY LIMIT</span>
+                            <span class="text-xs font-black text-gray-900">80 Videos / Hour</span>
+                        </div>
+                        <div class="bg-[#F7F8FB] p-3 rounded-2xl border border-[#EEF0F5]">
+                            <span class="text-[10px] text-gray-400 font-bold block">REWARD / 15 SEC</span>
+                            <span class="text-xs font-black text-emerald-600">$0.0004000 USDT</span>
+                        </div>
+                        <div class="bg-[#F7F8FB] p-3 rounded-2xl border border-[#EEF0F5]">
+                            <span class="text-[10px] text-gray-400 font-bold block">MINIMUM PAYOUT</span>
+                            <span class="text-xs font-black text-sky-600">$0.01 USDT BEP-20</span>
+                        </div>
+                    </div>
+
+                    <!-- Green Download Button -->
+                    <a href="<?= htmlspecialchars($settings['apk_download_url'] ?? 'ViewBoost.apk') ?>" download class="inline-block w-full h-[54px] rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm shadow-xl flex items-center justify-center gap-2 uppercase tracking-wider">
+                        <i class="fa-solid fa-cloud-arrow-down text-lg"></i> DOWNLOAD APK NOW
+                    </a>
+
+                    <div class="bg-[#F7F8FB] p-4 rounded-2xl border border-[#EEF0F5] text-left space-y-2 text-xs text-gray-600">
+                        <span class="font-extrabold text-gray-800 block">How to start earning:</span>
+                        <p><b>1.</b> Download and install the APK on your Android phone.</p>
+                        <p><b>2.</b> Open the app and log in with your registered email.</p>
+                        <p><b>3.</b> Tap <b>LAUNCH</b> to start verified automatic YouTube video viewing!</p>
+                        <p><b>4.</b> Share your referral link to earn 50% Level 1, 10% Level 2, and 1% Level 3 lifetime royalty.</p>
+                    </div>
+
+                    <div class="pt-2">
+                        <a href="?action=logout" class="text-xs text-red-500 font-bold">Sign Out</a>
+                    </div>
+                </div>
+            </div>
+        <?php endif; ?>
+    </div>
+
+    <!-- ==================== PERSISTENT BOTTOM NAVIGATION (IN-APP) ==================== -->
+    <?php if ($isApp && $tab !== 'download'): ?>
+    <nav class="bottom-nav fixed bottom-0 left-0 right-0 z-40 border-t border-gray-100 max-w-md mx-auto flex justify-around py-2.5 text-center text-[10px] font-semibold shadow-lg">
+        <a href="?tab=home" class="flex-1 flex flex-col items-center <?= $tab === 'home' ? 'text-sky-600 font-black' : 'text-gray-400' ?>">
+            <i class="fa-solid fa-house text-base mb-1"></i>
+            <span>Home</span>
+        </a>
+        <a href="?tab=promote" class="flex-1 flex flex-col items-center <?= $tab === 'promote' ? 'text-sky-600 font-black' : 'text-gray-400' ?>">
+            <i class="fa-solid fa-bullhorn text-base mb-1"></i>
+            <span>Promote</span>
+        </a>
+        <a href="?tab=invite" class="flex-1 flex flex-col items-center <?= $tab === 'invite' ? 'text-sky-600 font-black' : 'text-gray-400' ?>">
+            <i class="fa-solid fa-users text-base mb-1"></i>
+            <span>Invite</span>
+        </a>
+        <a href="?tab=account" class="flex-1 flex flex-col items-center <?= $tab === 'account' ? 'text-sky-600 font-black' : 'text-gray-400' ?>">
+            <i class="fa-solid fa-user-gear text-base mb-1"></i>
+            <span>Account</span>
+        </a>
+    </nav>
+    <?php endif; ?>
+
+    <!-- WITHDRAW MODAL (LOCKED TO USDT BEP-20 ONLY) -->
+    <div id="withdraw-modal" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+        <div class="bg-white w-full max-w-sm rounded-3xl p-6 space-y-4 shadow-2xl">
+            <div class="flex justify-between items-center pb-2 border-b border-gray-100">
+                <h3 class="font-black text-sm text-gray-900">Withdraw USDT (BEP-20)</h3>
+                <button onclick="closeModal('withdraw-modal')" class="text-gray-400 text-sm">✕</button>
+            </div>
+            <form method="POST" class="space-y-3">
+                <input type="hidden" name="action" value="confirm_withdraw">
+                <div>
+                    <label class="text-[11px] font-bold text-gray-600 block mb-1">Payment Method</label>
+                    <div class="w-full bg-[#F7F8FB] border border-[#EEF0F5] rounded-xl px-4 py-2.5 text-xs font-bold text-gray-800 flex items-center justify-between">
+                        <span>USDT (BEP-20)</span>
+                        <span class="text-xs text-sky-600 font-black"><i class="fa-solid fa-lock"></i> Locked</span>
+                    </div>
+                </div>
+                <div>
+                    <label class="text-[11px] font-bold text-gray-600 block mb-1">Amount ($ USD) - Min $0.01</label>
+                    <input type="number" step="0.0001" min="0.01" max="<?= $currentUser['main_balance'] ?>" name="amount" value="<?= max(0.01, min(0.23, $currentUser['main_balance'])) ?>" required class="w-full bg-[#F7F8FB] border border-[#EEF0F5] rounded-xl px-4 py-2.5 text-xs font-bold text-gray-900">
+                </div>
+                <div>
+                    <label class="text-[11px] font-bold text-gray-600 block mb-1">USDT BEP-20 Wallet Address</label>
+                    <input type="text" name="wallet_address" required placeholder="0x..." class="w-full bg-[#F7F8FB] border border-[#EEF0F5] rounded-xl px-4 py-2.5 text-xs font-mono">
+                </div>
+                <button type="submit" class="w-full h-11 rounded-full bg-[#16A34A] text-white text-xs font-bold uppercase shadow-md">
+                    CONFIRM WITHDRAW
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- DEPOSIT MODAL (EASYPAISA, JAZZCASH & USDT BEP-20) -->
+    <div id="deposit-modal" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+        <div class="bg-white w-full max-w-sm rounded-3xl p-6 space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
+            <div class="flex justify-between items-center pb-2 border-b border-gray-100">
+                <h3 class="font-black text-sm text-gray-900">Deposit Campaign Funds</h3>
+                <button onclick="closeModal('deposit-modal')" class="text-gray-400 text-sm">✕</button>
+            </div>
+            <form method="POST" class="space-y-3">
+                <input type="hidden" name="action" value="submit_deposit">
+                <div>
+                    <label class="text-[11px] font-bold text-gray-600 block mb-1">Select Deposit Method</label>
+                    <select id="dep_method_select" name="deposit_method" onchange="updateDepositAccountDetails()" class="w-full bg-[#F7F8FB] border border-[#EEF0F5] rounded-xl px-4 py-2.5 text-xs font-bold">
+                        <option value="USDT BEP-20">USDT (BEP-20)</option>
+                        <option value="EasyPaisa">EasyPaisa (1 USD = <?= $USD_TO_PKR_RATE ?> PKR)</option>
+                        <option value="JazzCash">JazzCash (1 USD = <?= $USD_TO_PKR_RATE ?> PKR)</option>
+                    </select>
+                </div>
+
+                <div id="account_details_box" class="bg-[#F7F8FB] border border-[#EEF0F5] rounded-2xl p-3 text-xs space-y-2"></div>
+
+                <div id="dep_warning_box" class="bg-red-50 border border-red-200 p-2.5 rounded-xl text-[10px] text-red-700 leading-tight">
+                    ⚠️ <b>Warning:</b> Send only on the specified network. Sending to wrong address results in permanent loss.
+                </div>
+
+                <div>
+                    <label class="text-[11px] font-bold text-gray-600 block mb-1" id="dep_amount_label">Deposit Amount ($ USD)</label>
+                    <input type="number" min="1" step="1" name="deposit_amount" value="5" required class="w-full bg-[#F7F8FB] border border-[#EEF0F5] rounded-xl px-4 py-2 text-xs font-bold">
+                </div>
+
+                <div>
+                    <label class="text-[11px] font-bold text-gray-600 block mb-1">Transaction ID (TID / TxHash)</label>
+                    <input type="text" name="tx_hash" required placeholder="e.g. 0x... or 1234567890" class="w-full bg-[#F7F8FB] border border-[#EEF0F5] rounded-xl px-4 py-2 text-xs font-mono">
+                </div>
+                <button type="submit" class="w-full h-11 rounded-full bg-gradient-to-r from-sky-500 to-indigo-600 text-white text-xs font-bold uppercase shadow-md">
+                    SUBMIT PROOF
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- JAVASCRIPT MASTER CONTROLLER -->
+    <script>
+        const USER_ID = <?= $currentUser['id'] ?>;
+        let isWatching = <?= $currentUser['watching_status'] === 'running' ? 'true' : 'false' ?>;
+
+        const COST_15 = <?= floatval($settings['cost_15s']) ?>;
+        const COST_30 = <?= floatval($settings['cost_30s']) ?>;
+        const COST_60 = <?= floatval($settings['cost_60s']) ?>;
+        const USD_RATE = <?= floatval($USD_TO_PKR_RATE) ?>;
+
+        function toggleMenu() {
+            document.getElementById('side-drawer').classList.toggle('open');
+            document.getElementById('drawer-overlay').classList.toggle('hidden');
+        }
+
+        function openModal(id) { document.getElementById(id).classList.remove('hidden'); }
+        function closeModal(id) { document.getElementById(id).classList.add('hidden'); }
+
+        function copyText(val) {
+            navigator.clipboard.writeText(val);
+            alert("Copied to clipboard!");
+        }
+
+        function calcCost() {
+            const v = parseInt(document.getElementById('pviews').value || 10);
+            const d = parseInt(document.getElementById('pduration').value || 15);
+            let unitCost = COST_15;
+            if (d >= 60) unitCost = COST_60;
+            else if (d >= 30) unitCost = COST_30;
+
+            document.getElementById('pcost').innerText = '$' + (v * unitCost).toFixed(4);
+        }
+
+        function updateDepositAccountDetails() {
+            const m = document.getElementById('dep_method_select').value;
+            const box = document.getElementById('account_details_box');
+            const lbl = document.getElementById('dep_amount_label');
+            const warn = document.getElementById('dep_warning_box');
+
+            if (m === 'EasyPaisa') {
+                lbl.innerText = "Amount in PKR (Rate: " + USD_RATE + " PKR = $1.00 USD)";
+                warn.classList.add('hidden');
+                box.innerHTML = `
+                    <div class="flex items-center justify-between pb-1">
+                        <span class="text-xs font-black text-emerald-700">EasyPaisa Official Account</span>
+                        <span class="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-bold">Verified</span>
+                    </div>
+                    <div class="bg-white p-2 rounded-xl border border-emerald-200 flex justify-between items-center">
+                        <b class="text-sm text-gray-900 font-mono"><?= $settings['easypaisa_no'] ?></b>
+                        <button type="button" onclick="copyText('<?= $settings['easypaisa_no'] ?>')" class="bg-emerald-600 text-white px-3 py-1 rounded-lg text-[10px] font-bold">📋 COPY</button>
+                    </div>
+                    <p class="text-[10px] text-gray-500">Account Title: <b><?= $settings['easypaisa_name'] ?></b></p>`;
+            } else if (m === 'JazzCash') {
+                lbl.innerText = "Amount in PKR (Rate: " + USD_RATE + " PKR = $1.00 USD)";
+                warn.classList.add('hidden');
+                box.innerHTML = `
+                    <div class="flex items-center justify-between pb-1">
+                        <span class="text-xs font-black text-amber-700">JazzCash Official Account</span>
+                        <span class="text-[10px] bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full font-bold">Verified</span>
+                    </div>
+                    <div class="bg-white p-2 rounded-xl border border-amber-200 flex justify-between items-center">
+                        <b class="text-sm text-gray-900 font-mono"><?= $settings['jazzcash_no'] ?></b>
+                        <button type="button" onclick="copyText('<?= $settings['jazzcash_no'] ?>')" class="bg-amber-600 text-white px-3 py-1 rounded-lg text-[10px] font-bold">📋 COPY</button>
+                    </div>
+                    <p class="text-[10px] text-gray-500">Account Title: <b><?= $settings['jazzcash_name'] ?></b></p>`;
+            } else {
+                lbl.innerText = "Deposit Amount ($ USD)";
+                warn.classList.remove('hidden');
+                box.innerHTML = `
+                    <div class="flex items-center justify-between pb-1">
+                        <span class="text-xs font-black text-sky-700">USDT (BEP-20) Wallet</span>
+                        <span class="text-[10px] bg-sky-100 text-sky-800 px-2 py-0.5 rounded-full font-bold">BSC Network</span>
+                    </div>
+                    <div class="bg-white p-2 rounded-xl border border-sky-200 flex justify-between items-center">
+                        <span class="text-[10px] text-gray-900 font-mono break-all"><?= $settings['admin_bep20'] ?></span>
+                        <button type="button" onclick="copyText('<?= $settings['admin_bep20'] ?>')" class="bg-sky-600 text-white px-3 py-1 rounded-lg text-[10px] font-bold shrink-0 ml-1">📋 COPY</button>
+                    </div>`;
+            }
+        }
+        updateDepositAccountDetails();
+
+        function handleMainAction() {
+            if (isWatching) {
+                if (window.AndroidBridge && window.AndroidBridge.stopAutoWatch) {
+                    window.AndroidBridge.stopAutoWatch();
+                } else {
+                    fetch('index.php?api=stop_watching&user_id=' + USER_ID);
+                }
+                updateWatchState(false, 0);
+            } else {
+                if (window.AndroidBridge && window.AndroidBridge.launchAutoWatch) {
+                    window.AndroidBridge.launchAutoWatch(USER_ID);
+                } else {
+                    fetch('index.php?api=get_video&user_id=' + USER_ID)
+                        .then(r => r.json())
+                        .then(d => {
+                            if (d.status === 'success') {
+                                window.location.href = "vnd.youtube:" + d.video_id;
+                                updateWatchState(true, d.duration || 15);
+                            } else {
+                                alert(d.message || "No task available right now");
+                            }
+                        });
+                }
+            }
+        }
+
+        function updateWatchState(running, secRemaining) {
+            isWatching = running;
+            const btn = document.getElementById('btn-action-main');
+            const timerBox = document.getElementById('inapp-timer-box');
+            const secText = document.getElementById('inapp-sec');
+
+            if (running) {
+                if (btn) {
+                    btn.innerText = "STOP WATCHING";
+                    btn.className = "w-full h-[54px] rounded-[50px] bg-red-600 text-white font-bold text-[16px] tracking-[1px] flex items-center justify-center uppercase shadow-md transition";
+                }
+                if (timerBox) timerBox.classList.remove('hidden');
+                if (secText) secText.innerText = (secRemaining > 0 ? secRemaining : 15) + "s";
+            } else {
+                if (btn) {
+                    btn.innerText = "LAUNCH";
+                    btn.className = "btn-launch w-full h-[54px] rounded-[50px] text-white font-bold text-[16px] tracking-[1px] flex items-center justify-center uppercase shadow-md transition";
+                }
+                if (timerBox) timerBox.classList.add('hidden');
+            }
+        }
+
+        // Live Real-Time Statistics Poller
+        setInterval(() => {
+            fetch('index.php?api=get_balance&user_id=' + USER_ID)
+                .then(r => r.json())
+                .then(res => {
+                    if (res.success) {
+                        const balEl = document.getElementById('disp-balance');
+                        const todayEarnEl = document.getElementById('disp-today-earn');
+                        const totalEarnEl = document.getElementById('disp-total-earn');
+                        const todayViewsEl = document.getElementById('disp-today-views');
+                        const totalViewsEl = document.getElementById('disp-total-views');
+
+                        if (balEl) balEl.innerText = '$' + res.main_balance;
+                        if (todayEarnEl) todayEarnEl.innerText = '$' + res.today_earning;
+                        if (totalEarnEl) totalEarnEl.innerText = '$' + res.total_earning;
+                        if (todayViewsEl) todayViewsEl.innerText = res.today_views;
+                        if (totalViewsEl) totalViewsEl.innerText = res.total_views;
+
+                        if (res.watching_status === 'running') {
+                            updateWatchState(true, res.remaining_seconds || 15);
+                        } else if (!isWatching) {
+                            updateWatchState(false, 0);
+                        }
+                    }
+                }).catch(() => {});
+        }, 3000);
+    </script>
+<?php endif; ?>
+</body>
+</html>
+<?php ob_end_flush(); ?>
+
+
+MySQL Database
+u275908885_watchbux
+1 MB
+MySQL User
+u275908885_Users786
+Created at
+2026-09-21
+Website
+watchbux.com
+
+password 
+
+@FyG2jxtIoN8
+
+
+email k leyhe code Wala already bani leya ha 
+
+<?php
+/**
+ * WATCHBUX - Transactional Mailer
+ * Hostinger SSL SMTP Engine (Port 465)
+ */
+
+define('SMTP_HOST', 'smtp.hostinger.com');
+define('SMTP_PORT', 465);
+define('SMTP_USER', 'verifywatchbux@watchbux.com'); // <-- Updated to your exact Hostinger Email
+define('SMTP_PASS', 'l4N/m0N$');                   // <-- Your Password
+define('SMTP_FROM_NAME', 'WatchBux Verification');
+
+function sendVerificationEmail(string $recipientEmail, string $otpCode): bool {
+    $subject = "Your WatchBux Verification Code: " . $otpCode;
+    
+    $htmlBody = "
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset='UTF-8'>
+        <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #F3F4F9; margin: 0; padding: 20px; }
+            .box { max-width: 460px; margin: 0 auto; background: #ffffff; border-radius: 20px; padding: 32px; border: 1px solid #E5E7EB; text-align: center; }
+            .logo { font-size: 20px; font-weight: 900; color: #0284C7; letter-spacing: 1px; margin-bottom: 16px; }
+            .otp { font-size: 34px; font-weight: 900; letter-spacing: 6px; color: #0F172A; background: #F1F5F9; padding: 14px 24px; border-radius: 12px; display: inline-block; margin: 18px 0; border: 1px dashed #0284C7; }
+            .info { font-size: 13px; color: #64748B; line-height: 1.6; }
+            .footer { font-size: 11px; color: #94A3B8; margin-top: 24px; }
+        </style>
+    </head>
+    <body>
+        <div class='box'>
+            <div class='logo'>WATCHBUX OFFICIAL</div>
+            <h2 style='color:#1E293B; margin: 0; font-size: 20px;'>Confirm Your Gmail</h2>
+            <p class='info'>Use the 6-digit verification code below to complete your registration. This code expires in 10 minutes.</p>
+            <div class='otp'>{$otpCode}</div>
+            <p class='info'>Please check your inbox or spam folder. Do not share this OTP with anyone.</p>
+            <div class='footer'>&copy; " . date('Y') . " WatchBux. All rights reserved.</div>
+        </div>
+    </body>
+    </html>";
+
+    $timeout = 15;
+    $socket = @fsockopen("ssl://" . SMTP_HOST, SMTP_PORT, $errno, $errstr, $timeout);
+    if (!$socket) {
+        error_log("[SMTP Socket Error] $errstr ($errno)");
+        return false;
+    }
+
+    $read = function() use ($socket) {
+        $res = "";
+        while ($line = fgets($socket, 515)) {
+            $res .= $line;
+            if (substr($line, 3, 1) === " ") break;
+        }
+        return $res;
+    };
+
+    $send = function(string $cmd) use ($socket) {
+        fputs($socket, $cmd . "\r\n");
+    };
+
+    $read();
+    $send("EHLO " . ($_SERVER['SERVER_NAME'] ?? 'localhost'));
+    $read();
+
+    $send("AUTH LOGIN");
+    $read();
+    $send(base64_encode(SMTP_USER));
+    $read();
+    $send(base64_encode(SMTP_PASS));
+    $authRes = $read();
+
+    if (strpos($authRes, '235') === false) {
+        error_log("[SMTP Auth Error] " . $authRes);
+        fclose($socket);
+        return false;
+    }
+
+    $send("MAIL FROM: <" . SMTP_USER . ">");
+    $read();
+    $send("RCPT TO: <" . $recipientEmail . ">");
+    $read();
+    $send("DATA");
+    $read();
+
+    $headers  = "MIME-Version: 1.0\r\n";
+    $headers .= "Content-Type: text/html; charset=UTF-8\r\n";
+    $headers .= "From: " . SMTP_FROM_NAME . " <" . SMTP_USER . ">\r\n";
+    $headers .= "To: <" . $recipientEmail . ">\r\n";
+    $headers .= "Subject: " . $subject . "\r\n";
+    $headers .= "Date: " . date('r') . "\r\n";
+
+    $send($headers . "\r\n" . $htmlBody . "\r\n.");
+    $read();
+
+    $send("QUIT");
+    $read();
+    fclose($socket);
+
+    return true;
+}
+
+mailer.php
+
+yhe already banai leya ha  Baki naiia full 🌝 APK me website bhe working kre dominos open kre to register page oep hojye Auto 
+
+
+

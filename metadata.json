@@ -1,0 +1,8 @@
+{
+  "name": "MetroDash",
+  "description": "A vibrant 3D endless subway runner with Subway-style trains, jetpack flying, chasing police guard and pup, selectable 3D themes, and procedural audio. Developed by OMAN.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
